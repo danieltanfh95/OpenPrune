@@ -218,7 +218,13 @@ class SuspicionScorer:
 
     def _score_file_age(self, last_modified: datetime) -> tuple[int, str]:
         """Calculate suspicion adjustment based on file age."""
-        now = datetime.now()
+        # Handle timezone-aware vs naive datetimes
+        if last_modified.tzinfo is not None:
+            # Make now timezone-aware to match
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.now()
         age = now - last_modified
         months = age.days / 30
 

@@ -74,6 +74,5 @@ dmypy.json
 # ruff
 .ruff_cache/
 
-# OpenPrune output files
-open-prune.json
-openprune-results.json
+# OpenPrune output directory
+.openprune/

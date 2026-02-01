@@ -38,6 +38,7 @@ from openprune.models.results import (
 )
 from openprune.output.json_writer import write_config, write_results
 from openprune.output.tree import build_results_tree, build_summary_tree, display_tree
+from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path
 
 app = typer.Typer(
     name="openprune",
@@ -113,11 +114,11 @@ def detect(
         Path("."),
         help="Path to the Python project to analyze",
     ),
-    output: Path = typer.Option(
-        Path("open-prune.json"),
+    output: Optional[Path] = typer.Option(
+        None,
         "--output",
         "-o",
-        help="Path for config JSON output",
+        help="Path for config JSON output (default: .openprune/config.json)",
     ),
 ) -> None:
     """Run archetype detection and generate config file."""
@@ -125,6 +126,11 @@ def detect(
     console.print()
 
     path = path.resolve()
+
+    # Use .openprune/config.json by default
+    if output is None:
+        ensure_openprune_dir(path)
+        output = get_config_path(path)
 
     with Progress(
         SpinnerColumn(),
@@ -152,17 +158,17 @@ def analyze(
         Path("."),
         help="Path to the Python project to analyze",
     ),
-    config: Path = typer.Option(
-        Path("open-prune.json"),
+    config: Optional[Path] = typer.Option(
+        None,
         "--config",
         "-c",
-        help="Path to open-prune.json config file",
+        help="Path to config file (default: .openprune/config.json)",
     ),
-    output: Path = typer.Option(
-        Path("openprune-results.json"),
+    output: Optional[Path] = typer.Option(
+        None,
         "--output",
         "-o",
-        help="Path for results JSON output",
+        help="Path for results JSON output (default: .openprune/results.json)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -173,6 +179,13 @@ def analyze(
 ) -> None:
     """Run full dead code analysis using existing config."""
     path = path.resolve()
+
+    # Use .openprune/ paths by default
+    if config is None:
+        config = get_config_path(path)
+    if output is None:
+        ensure_openprune_dir(path)
+        output = get_results_path(path)
 
     if not config.exists():
         console.print(f"[red]Config file not found:[/] {config}")
@@ -196,9 +209,9 @@ def analyze(
 
 @app.command()
 def show(
-    results_path: Path = typer.Argument(
-        Path("openprune-results.json"),
-        help="Path to results file",
+    results_path: Optional[Path] = typer.Argument(
+        None,
+        help="Path to results file (default: .openprune/results.json)",
     ),
     verbose: bool = typer.Option(
         False,
@@ -213,6 +226,10 @@ def show(
     ),
 ) -> None:
     """Display results from a previous analysis run."""
+    # Default to .openprune/results.json in current directory
+    if results_path is None:
+        results_path = get_results_path(Path.cwd())
+
     if not results_path.exists():
         console.print(f"[red]Results file not found:[/] {results_path}")
         raise typer.Exit(1)
@@ -257,8 +274,11 @@ def run_interactive(
 ) -> None:
     """Run OpenPrune in interactive mode."""
     path = path.resolve()
-    config_path = config_path or Path("open-prune.json")
-    output_path = output_path or Path("openprune-results.json")
+
+    # Use .openprune/ directory by default
+    ensure_openprune_dir(path)
+    config_path = config_path or get_config_path(path)
+    output_path = output_path or get_results_path(path)
 
     console.print(Panel.fit("[bold blue]OpenPrune - Dead Code Detection[/]"))
     console.print(f"\n[dim]Scanning:[/] {path}\n")
