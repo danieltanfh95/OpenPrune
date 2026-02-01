@@ -212,3 +212,445 @@ class TestCallerQualifiedNames:
 
         # Should contain class and method in qualified name
         assert any("MyClass" in c and "my_method" in c for c in callers)
+
+
+class TestVisitorDefinitions:
+    """Tests for symbol definition collection."""
+
+    def test_collects_function_definitions(self):
+        """Should collect function definitions."""
+        source = """
+        def my_function():
+            pass
+
+        def another_function(x, y):
+            return x + y
+        """
+        result = analyze_source(source)
+
+        names = [s.name for s in result.definitions.values()]
+        assert "my_function" in names
+        assert "another_function" in names
+
+    def test_collects_class_definitions(self):
+        """Should collect class definitions."""
+        source = """
+        class MyClass:
+            pass
+
+        class AnotherClass(MyClass):
+            pass
+        """
+        result = analyze_source(source)
+
+        names = [s.name for s in result.definitions.values()]
+        assert "MyClass" in names
+        assert "AnotherClass" in names
+
+    def test_collects_method_definitions(self):
+        """Should collect method definitions inside classes."""
+        source = """
+        class MyClass:
+            def method_one(self):
+                pass
+
+            def method_two(self, arg):
+                return arg
+        """
+        result = analyze_source(source)
+
+        qnames = list(result.definitions.keys())
+        assert any("method_one" in q for q in qnames)
+        assert any("method_two" in q for q in qnames)
+
+    def test_collects_module_level_variables(self):
+        """Should collect module-level variable definitions."""
+        source = """
+        module_var = 42
+        another_var = "hello"
+        """
+        result = analyze_source(source)
+
+        names = [s.name for s in result.definitions.values()]
+        assert "module_var" in names
+        assert "another_var" in names
+
+    def test_collects_constants(self):
+        """Should identify ALL_CAPS as constants."""
+        source = """
+        MY_CONSTANT = 100
+        ANOTHER_CONSTANT = "value"
+        """
+        result = analyze_source(source)
+
+        from openprune.models.dependency import SymbolType
+
+        constants = [s for s in result.definitions.values() if s.type == SymbolType.CONSTANT]
+        names = [c.name for c in constants]
+        assert "MY_CONSTANT" in names
+        assert "ANOTHER_CONSTANT" in names
+
+    def test_collects_imports(self):
+        """Should collect import definitions."""
+        source = """
+        import os
+        import sys as system
+        from pathlib import Path
+        from typing import List, Dict
+        """
+        result = analyze_source(source)
+
+        names = [s.name for s in result.definitions.values()]
+        assert "os" in names
+        assert "system" in names
+        assert "Path" in names
+        assert "List" in names
+        assert "Dict" in names
+
+
+class TestVisitorDecorators:
+    """Tests for decorator tracking."""
+
+    def test_tracks_function_decorators(self):
+        """Should track decorators on functions."""
+        source = """
+        def decorator(f):
+            return f
+
+        @decorator
+        def decorated():
+            pass
+        """
+        result = analyze_source(source)
+
+        decorated = [s for s in result.definitions.values() if s.name == "decorated"][0]
+        assert len(decorated.decorators) == 1
+        assert "decorator" in decorated.decorators[0]
+
+    def test_tracks_multiple_decorators(self):
+        """Should track multiple decorators."""
+        source = """
+        def dec1(f): return f
+        def dec2(f): return f
+
+        @dec1
+        @dec2
+        def multi_decorated():
+            pass
+        """
+        result = analyze_source(source)
+
+        decorated = [s for s in result.definitions.values() if s.name == "multi_decorated"][0]
+        assert len(decorated.decorators) == 2
+
+    def test_tracks_class_decorators(self):
+        """Should track decorators on classes."""
+        source = """
+        def class_decorator(cls):
+            return cls
+
+        @class_decorator
+        class DecoratedClass:
+            pass
+        """
+        result = analyze_source(source)
+
+        decorated = [s for s in result.definitions.values() if s.name == "DecoratedClass"][0]
+        assert len(decorated.decorators) == 1
+
+    def test_tracks_decorator_with_args(self):
+        """Should track decorators with arguments."""
+        source = """
+        def decorator(arg):
+            def wrapper(f):
+                return f
+            return wrapper
+
+        @decorator("value")
+        def decorated():
+            pass
+        """
+        result = analyze_source(source)
+
+        decorated = [s for s in result.definitions.values() if s.name == "decorated"][0]
+        assert len(decorated.decorators) == 1
+        # Should contain the decorator call
+        assert "decorator" in decorated.decorators[0]
+
+
+class TestVisitorDunderAndPrivate:
+    """Tests for dunder and private symbol detection."""
+
+    def test_detects_dunder_methods(self):
+        """Should mark dunder methods."""
+        source = """
+        class MyClass:
+            def __init__(self):
+                pass
+
+            def __str__(self):
+                return ""
+        """
+        result = analyze_source(source)
+
+        init = [s for s in result.definitions.values() if s.name == "__init__"][0]
+        str_method = [s for s in result.definitions.values() if s.name == "__str__"][0]
+
+        assert init.is_dunder is True
+        assert str_method.is_dunder is True
+
+    def test_detects_private_methods(self):
+        """Should mark private methods (single underscore)."""
+        source = """
+        class MyClass:
+            def _private_method(self):
+                pass
+
+            def public_method(self):
+                pass
+        """
+        result = analyze_source(source)
+
+        private = [s for s in result.definitions.values() if s.name == "_private_method"][0]
+        public = [s for s in result.definitions.values() if s.name == "public_method"][0]
+
+        assert private.is_private is True
+        assert public.is_private is False
+
+    def test_dunder_not_private(self):
+        """Dunder methods should not be marked as private."""
+        source = """
+        class MyClass:
+            def __init__(self):
+                pass
+        """
+        result = analyze_source(source)
+
+        init = [s for s in result.definitions.values() if s.name == "__init__"][0]
+
+        assert init.is_dunder is True
+        assert init.is_private is False
+
+
+class TestVisitorAssignments:
+    """Tests for various assignment types."""
+
+    def test_annotated_assignment(self):
+        """Should handle annotated assignments."""
+        source = """
+        name: str = "test"
+        count: int = 0
+        """
+        result = analyze_source(source)
+
+        names = [s.name for s in result.definitions.values()]
+        assert "name" in names
+        assert "count" in names
+
+    def test_tuple_unpacking(self):
+        """Should handle tuple unpacking in assignments."""
+        source = """
+        a, b = 1, 2
+        x, y, z = (1, 2, 3)
+        """
+        result = analyze_source(source)
+
+        # Local variables inside module scope should be tracked
+        # but this depends on implementation
+        # At minimum, should not crash
+
+    def test_for_loop_variables(self):
+        """Should track for loop variables (as local)."""
+        source = """
+        def func():
+            for i in range(10):
+                print(i)
+        """
+        result = analyze_source(source)
+
+        # 'i' should be treated as local and not cause issues
+        assert result.error is None
+
+    def test_with_statement_variables(self):
+        """Should track with statement variables."""
+        source = """
+        def func():
+            with open("file") as f:
+                data = f.read()
+        """
+        result = analyze_source(source)
+
+        assert result.error is None
+
+
+class TestVisitorUsageContexts:
+    """Tests for different usage contexts."""
+
+    def test_call_context(self):
+        """Should track function calls."""
+        source = """
+        def helper():
+            pass
+
+        def main():
+            helper()
+        """
+        result = analyze_source(source)
+
+        helper_usages = [u for u in result.usages
+                        if u.symbol_name == "helper" and u.context == UsageContext.CALL]
+        assert len(helper_usages) >= 1
+
+    def test_attribute_context(self):
+        """Should track attribute access."""
+        source = """
+        class Obj:
+            value = 1
+
+        def func():
+            obj = Obj()
+            return obj.value
+        """
+        result = analyze_source(source)
+
+        value_usages = [u for u in result.usages
+                       if u.symbol_name == "value" and u.context == UsageContext.ATTRIBUTE]
+        assert len(value_usages) >= 1
+
+    def test_inheritance_context(self):
+        """Should track inheritance usages."""
+        source = """
+        class Base:
+            pass
+
+        class Derived(Base):
+            pass
+        """
+        result = analyze_source(source)
+
+        base_usages = [u for u in result.usages
+                      if u.symbol_name == "Base" and u.context == UsageContext.INHERITANCE]
+        assert len(base_usages) >= 1
+
+    def test_type_hint_context(self):
+        """Should track type hint usages."""
+        source = """
+        from typing import List
+
+        def func(items: List[int]) -> int:
+            return sum(items)
+        """
+        result = analyze_source(source)
+
+        # Should have type hint usages
+        type_hint_usages = [u for u in result.usages
+                          if u.context == UsageContext.TYPE_HINT]
+        assert len(type_hint_usages) >= 1
+
+
+class TestVisitorComprehensions:
+    """Tests for comprehension variable handling."""
+
+    def test_list_comprehension(self):
+        """Should handle list comprehension variables."""
+        source = """
+        def func():
+            result = [x * 2 for x in range(10)]
+            return result
+        """
+        result = analyze_source(source)
+
+        assert result.error is None
+
+    def test_dict_comprehension(self):
+        """Should handle dict comprehension variables."""
+        source = """
+        def func():
+            result = {k: v for k, v in items.items()}
+            return result
+        """
+        result = analyze_source(source)
+
+        assert result.error is None
+
+    def test_set_comprehension(self):
+        """Should handle set comprehension variables."""
+        source = """
+        def func():
+            result = {x for x in range(10)}
+            return result
+        """
+        result = analyze_source(source)
+
+        assert result.error is None
+
+    def test_generator_expression(self):
+        """Should handle generator expressions."""
+        source = """
+        def func():
+            result = (x * 2 for x in range(10))
+            return list(result)
+        """
+        result = analyze_source(source)
+
+        assert result.error is None
+
+
+class TestVisitorErrorHandling:
+    """Tests for error handling in the visitor."""
+
+    def test_syntax_error_reported(self, tmp_path: Path):
+        """Should report syntax errors."""
+        bad_file = tmp_path / "bad.py"
+        bad_file.write_text("def broken(:\n    pass")
+
+        result = analyze_file(bad_file)
+
+        assert result.error is not None
+        assert "Syntax error" in result.error
+
+    def test_encoding_error_reported(self, tmp_path: Path):
+        """Should report encoding errors."""
+        bad_file = tmp_path / "bad_encoding.py"
+        bad_file.write_bytes(b"\xff\xfe invalid utf8")
+
+        result = analyze_file(bad_file)
+
+        assert result.error is not None
+
+    def test_empty_file_works(self, tmp_path: Path):
+        """Should handle empty files."""
+        empty_file = tmp_path / "empty.py"
+        empty_file.write_text("")
+
+        result = analyze_file(empty_file)
+
+        assert result.error is None
+        assert len(result.definitions) == 0
+
+
+class TestVisitorComments:
+    """Tests for comment extraction."""
+
+    def test_extracts_comments(self):
+        """Should extract line comments."""
+        source = """
+        # This is a comment
+        x = 1  # inline comment
+
+        def func():
+            pass  # noqa
+        """
+        result = analyze_source(source)
+
+        assert len(result.line_comments) > 0
+
+    def test_extracts_noqa_comments(self):
+        """Should extract noqa comments."""
+        source = """
+        import os  # noqa: F401
+        """
+        result = analyze_source(source)
+
+        noqa_comments = [c for c in result.line_comments.values() if "noqa" in c.lower()]
+        assert len(noqa_comments) >= 1
