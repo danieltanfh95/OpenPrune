@@ -132,3 +132,19 @@ def load_results(results_path: Path) -> dict:
     """Load an openprune-results.json file."""
     with open(results_path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def write_verification_results(results: "VerificationResults", output_path: Path) -> None:
+    """Write the verified.json file."""
+    from openprune.models.verification import VerificationResults
+
+    data = results.to_dict()
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_verification_results(results_path: Path) -> dict:
+    """Load a verified.json file."""
+    with open(results_path, "r", encoding="utf-8") as f:
+        return json.load(f)

@@ -38,7 +38,7 @@ from openprune.models.results import (
 )
 from openprune.output.json_writer import write_config, write_results
 from openprune.output.tree import build_results_tree, build_summary_tree, display_tree
-from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path
+from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path, get_verified_path
 
 app = typer.Typer(
     name="openprune",
@@ -205,6 +205,113 @@ def analyze(
         display_tree(tree)
     else:
         _display_summary(results)
+
+
+@app.command()
+def verify(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Path to the Python project",
+    ),
+    llm: str = typer.Option(
+        "claude",
+        "--llm",
+        "-l",
+        help="LLM CLI tool to use (e.g., claude, kimi, opencode)",
+    ),
+    min_confidence: int = typer.Option(
+        70,
+        "--min-confidence",
+        "-m",
+        help="Minimum confidence to include for verification",
+    ),
+    batch: bool = typer.Option(
+        False,
+        "--batch",
+        "-b",
+        help="Run in non-interactive batch mode",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        "-n",
+        help="Show what would be sent to LLM without executing",
+    ),
+) -> None:
+    """Verify dead code candidates using an LLM.
+
+    By default, launches an interactive LLM session with context about the
+    .openprune/ folder. The LLM can read results.json, examine source files,
+    and write verdicts to verified.json.
+
+    Use --batch for non-interactive processing of each item.
+    """
+    path = path.resolve()
+    results_path = get_results_path(path)
+
+    if not results_path.exists():
+        console.print(f"[red]No results found:[/] {results_path}")
+        console.print("Run [bold]openprune analyze[/] first to generate results.")
+        raise typer.Exit(1)
+
+    if dry_run:
+        _show_verify_dry_run(path, min_confidence)
+        return
+
+    if batch:
+        # Non-interactive batch mode
+        from openprune.verification.batch import run_batch_verification
+
+        try:
+            run_batch_verification(path, llm, min_confidence)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/] {e}")
+            raise typer.Exit(1)
+    else:
+        # Interactive mode - handoff to LLM CLI
+        console.print(Panel.fit("[bold blue]OpenPrune - LLM Verification[/]"))
+        console.print(f"\n[dim]Using LLM:[/] {llm}")
+        console.print(f"[dim]Min confidence:[/] {min_confidence}%")
+        console.print(f"[dim]Working directory:[/] {path}")
+        console.print(f"[dim]The LLM has access to .openprune/ files[/]\n")
+
+        from openprune.verification.session import launch_llm_session
+
+        try:
+            launch_llm_session(path, llm, min_confidence)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/] {e}")
+            raise typer.Exit(1)
+
+
+def _show_verify_dry_run(path: Path, min_confidence: int) -> None:
+    """Show dry-run preview for verification."""
+    from openprune.output.json_writer import load_results
+    from openprune.verification.prompts import build_system_prompt
+
+    results_path = get_results_path(path)
+    data = load_results(results_path)
+    dead_code = data.get("dead_code", [])
+
+    candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
+
+    console.print(Panel.fit("[bold cyan]Dry Run Preview[/]"))
+    console.print(f"\n[dim]Items to verify:[/] {len(candidates)}")
+    console.print(f"[dim]Skipped (below threshold):[/] {len(dead_code) - len(candidates)}\n")
+
+    if candidates:
+        console.print("[bold]Top 5 candidates:[/]")
+        for item in candidates[:5]:
+            console.print(
+                f"  • [cyan]{item.get('name')}[/] "
+                f"({item.get('type')}, {item.get('confidence')}%)"
+            )
+
+    console.print("\n[bold]System prompt preview:[/]")
+    prompt = build_system_prompt(path, min_confidence)
+    # Show first 500 chars
+    preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
+    console.print(f"[dim]{preview}[/]")
 
 
 @app.command()

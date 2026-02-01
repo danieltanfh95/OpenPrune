@@ -19,6 +19,12 @@ from openprune.models.dependency import (
     UsageContext,
 )
 from openprune.models.results import AnalysisMetadata, AnalysisResults, DeadCodeItem
+from openprune.models.verification import (
+    LLMVerdict,
+    VerificationResults,
+    VerificationSummary,
+    VerifiedItem,
+)
 
 __all__ = [
     # Archetype models
@@ -41,4 +47,9 @@ __all__ = [
     "AnalysisMetadata",
     "AnalysisResults",
     "DeadCodeItem",
+    # Verification models
+    "LLMVerdict",
+    "VerificationResults",
+    "VerificationSummary",
+    "VerifiedItem",
 ]
