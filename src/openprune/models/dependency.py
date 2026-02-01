@@ -73,6 +73,7 @@ class Usage:
     context: UsageContext
     location: Location
     resolved_to: str | None = None  # Qualified name if resolved
+    caller: str | None = None  # Qualified name of the function/method making this usage
 
 
 @dataclass

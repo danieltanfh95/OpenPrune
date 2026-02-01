@@ -41,23 +41,35 @@ def write_config(result: ArchetypeResult, output_path: Path) -> None:
                 "**/node_modules/**",
             ],
         },
-        "linting": {
-            "respect_noqa": True,
-            "noqa_patterns": result.linting_config.noqa_patterns,
-            "ignore_decorators": [
-                "@pytest.fixture",
-                "@pytest.mark.*",
-                "@override",
-                "@abstractmethod",
-                "@property",
-            ],
-            "ignore_names": ["_*", "__*__", "test_*", "setUp", "tearDown"],
-            "sources": result.linting_config.sources,
-        },
+        "linting": _build_linting_section(result),
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
+
+
+def _build_linting_section(result: ArchetypeResult) -> dict:
+    """Build linting configuration from detected config."""
+    detected = result.linting_config
+
+    # Default noqa patterns
+    default_noqa = ["# noqa", "# type: ignore"]
+
+    # Merge detected noqa patterns with defaults
+    noqa_patterns = list(set(default_noqa + (detected.noqa_patterns or [])))
+
+    return {
+        "respect_noqa": True,
+        "noqa_patterns": noqa_patterns,
+        "ignore_decorators": [
+            "@pytest.fixture",
+            "@pytest.mark.*",
+            "@override",
+            "@abstractmethod",
+            "@property",
+        ],
+        "sources": detected.sources,
+    }
 
 
 def _build_entrypoint_config(result: ArchetypeResult) -> list[dict]:

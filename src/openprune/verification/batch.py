@@ -1,13 +1,15 @@
-"""Non-interactive batch verification using LLM CLI."""
+"""Non-interactive oneshot verification using LLM CLI."""
 
 import json
+import re
 import shutil
 import subprocess
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
+from rich.panel import Panel
 
 from openprune.models.verification import (
     LLMVerdict,
@@ -17,6 +19,7 @@ from openprune.models.verification import (
 )
 from openprune.output.json_writer import load_results
 from openprune.paths import get_results_path, get_verified_path
+from openprune.verification.prompts import build_system_prompt
 
 console = Console()
 
@@ -25,19 +28,19 @@ def run_batch_verification(
     project_path: Path,
     llm_tool: str = "claude",
     min_confidence: int = 70,
-    timeout: int = 120,
+    timeout: int = 600,  # Longer timeout for full analysis
 ) -> VerificationResults:
     """
-    Run non-interactive batch verification of dead code items.
+    Run single-session oneshot verification of all dead code items.
 
-    This processes each item one-by-one using the LLM CLI in print mode,
-    parsing the response to extract verdicts.
+    This sends a single comprehensive prompt to the LLM with all items
+    and file contents, then parses the complete response.
 
     Args:
         project_path: Path to the project root
         llm_tool: Name of the LLM CLI tool to use
         min_confidence: Minimum confidence threshold for verification
-        timeout: Timeout in seconds per LLM call
+        timeout: Timeout in seconds for the LLM call
 
     Returns:
         VerificationResults with all verified items
@@ -56,60 +59,38 @@ def run_batch_verification(
 
     results_data = load_results(results_path)
     dead_code = results_data.get("dead_code", [])
+    orphaned_files = results_data.get("orphaned_files", [])
 
     # Filter by confidence
     candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
     skipped = [d for d in dead_code if d.get("confidence", 0) < min_confidence]
 
-    console.print(f"[green]{len(candidates)}[/] items to verify (confidence >= {min_confidence}%)")
-    console.print(f"[dim]{len(skipped)} items skipped (below threshold)[/]\n")
+    console.print(Panel.fit("[bold blue]OpenPrune - Oneshot Verification[/]"))
+    console.print(f"\n[dim]LLM:[/] {llm_tool}")
+    console.print(f"[dim]Min confidence:[/] {min_confidence}%")
+    console.print(f"[green]{len(candidates)}[/] items to verify")
+    console.print(f"[dim]{len(skipped)} items below threshold[/]")
+    if orphaned_files:
+        console.print(f"[yellow]{len(orphaned_files)} orphaned files[/]")
 
     if not candidates:
-        console.print("[yellow]No items to verify.[/]")
+        console.print("\n[yellow]No items to verify.[/]")
         return _build_empty_results(skipped, llm_tool, min_confidence)
 
-    verified_items: list[VerifiedItem] = []
+    # Build comprehensive oneshot prompt
+    console.print("\n[dim]Building prompt with file contents...[/]")
+    prompt = _build_oneshot_prompt(project_path, candidates, orphaned_files, min_confidence)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Verifying items...", total=len(candidates))
+    # Execute single LLM call
+    console.print(f"[dim]Sending to {llm_tool} (timeout: {timeout}s)...[/]\n")
+    response = _execute_llm_oneshot(llm_tool, prompt, project_path, timeout)
 
-        for item_data in candidates:
-            name = item_data.get("name", "unknown")
-            progress.update(task, description=f"Verifying {name}...")
+    if response.startswith("ERROR:"):
+        console.print(f"[red]{response}[/]")
+        raise RuntimeError(response)
 
-            # Build prompt for this item
-            prompt = _build_item_prompt(item_data, project_path)
-
-            # Execute LLM
-            response = _execute_llm(llm_tool, prompt, project_path, timeout)
-
-            # Parse response
-            verdict, reasoning = _parse_response(response)
-
-            # Create verified item
-            verified_item = VerifiedItem(
-                qualified_name=item_data.get("qualified_name", ""),
-                name=name,
-                type=item_data.get("type", "unknown"),
-                file=Path(item_data.get("file", "")),
-                line=item_data.get("line", 0),
-                end_line=item_data.get("end_line"),
-                original_confidence=item_data.get("confidence", 0),
-                reasons=item_data.get("reasons", []),
-                code_preview=item_data.get("code_preview"),
-                verdict=verdict,
-                llm_reasoning=reasoning,
-                verified_at=datetime.now(),
-            )
-
-            verified_items.append(verified_item)
-            progress.update(task, advance=1)
+    # Parse the complete response
+    verified_items = _parse_oneshot_response(response, candidates)
 
     # Build and save results
     results = _build_results(verified_items, skipped, llm_tool, min_confidence)
@@ -124,77 +105,134 @@ def run_batch_verification(
     return results
 
 
-def _build_item_prompt(item_data: dict, project_path: Path) -> str:
-    """Build a verification prompt for a single item."""
-    file_path = project_path / item_data.get("file", "")
-    code_context = ""
+def _build_oneshot_prompt(
+    project_path: Path,
+    candidates: list[dict],
+    orphaned_files: list[dict],
+    min_confidence: int,
+) -> str:
+    """Build a comprehensive prompt for single-session verification."""
+    prompt_parts = [
+        build_system_prompt(project_path, min_confidence),
+        "\n---\n\n",
+        "# Verification Session\n\n",
+    ]
 
-    if file_path.exists():
-        try:
-            lines = file_path.read_text().split("\n")
-            start_line = item_data.get("line", 1) - 1
-            end_line = item_data.get("end_line") or item_data.get("line", 1)
+    # Add orphaned files section if any
+    if orphaned_files:
+        prompt_parts.append("## Orphaned Files (100% confidence - entire file unreachable)\n\n")
+        for of in orphaned_files:
+            prompt_parts.append(f"- **{of.get('file', 'unknown')}**: {of.get('symbols', 0)} symbols, ")
+            prompt_parts.append(f"{of.get('lines', 0)} lines\n")
+        prompt_parts.append("\n")
 
-            # Get surrounding context
-            context_start = max(0, start_line - 5)
-            context_end = min(len(lines), end_line + 5)
+    # Group candidates by file for context
+    prompt_parts.append("## Items to Verify\n\n")
 
-            code_lines = []
-            for i in range(context_start, context_end):
-                marker = ">>> " if start_line <= i < end_line else "    "
-                code_lines.append(f"{i + 1:4d}{marker}{lines[i]}")
+    by_file: dict[str, list[dict]] = defaultdict(list)
+    for item in candidates:
+        by_file[item.get("file", "")].append(item)
 
-            code_context = "\n".join(code_lines)
-        except OSError:
-            code_context = "(Could not read file)"
+    for file_path, items in by_file.items():
+        full_path = project_path / file_path
+        prompt_parts.append(f"### {file_path}\n\n")
 
-    reasons = "\n".join(f"- {r}" for r in item_data.get("reasons", [])) or "- No specific reasons"
+        # Include file contents
+        if full_path.exists():
+            try:
+                content = full_path.read_text()
+                # Add line numbers for reference
+                numbered_lines = []
+                for i, line in enumerate(content.split("\n"), 1):
+                    numbered_lines.append(f"{i:4d} | {line}")
+                prompt_parts.append("```python\n")
+                prompt_parts.append("\n".join(numbered_lines))
+                prompt_parts.append("\n```\n\n")
+            except OSError:
+                prompt_parts.append("*(Could not read file)*\n\n")
 
-    return f"""Analyze this dead code candidate and determine if it can be safely deleted.
+        # List items in this file
+        prompt_parts.append("**Dead code candidates in this file:**\n\n")
+        for item in items:
+            confidence = item.get("confidence", 0)
+            reasons = ", ".join(item.get("reasons", [])) or "No specific reason"
 
-## Code Under Review
+            # Add confidence level indicator
+            if confidence == 0:
+                conf_label = "[ENTRYPOINT]"
+            elif confidence < 50:
+                conf_label = "[LOW - needs verification]"
+            elif confidence < 80:
+                conf_label = "[MEDIUM]"
+            else:
+                conf_label = "[HIGH]"
 
-**Symbol**: `{item_data.get('qualified_name', 'unknown')}`
-**Type**: {item_data.get('type', 'unknown')}
-**File**: {item_data.get('file', 'unknown')}
-**Line**: {item_data.get('line', 0)}
-**Confidence**: {item_data.get('confidence', 0)}%
+            prompt_parts.append(
+                f"- `{item.get('qualified_name', item.get('name', 'unknown'))}` "
+                f"(line {item.get('line', 0)}, {confidence}% {conf_label})\n"
+                f"  - Type: {item.get('type', 'unknown')}\n"
+                f"  - Reasons: {reasons}\n\n"
+            )
 
-### Code Context:
-```python
-{code_context}
-```
-
-### Static Analysis Reasons:
-{reasons}
+    # Add task instructions
+    prompt_parts.append("""
+---
 
 ## Your Task
 
-Determine if this code is truly dead and safe to delete. Consider:
-1. Dynamic invocation (getattr, reflection, string imports)
-2. Public API external code might depend on
-3. Framework patterns (decorators, magic methods)
-4. Test/script usage not captured by static analysis
+Review ALL items listed above and provide verdicts.
+
+**IMPORTANT REMINDERS**:
+1. **0% confidence = ENTRYPOINT** (Flask route, Celery task, etc.) - Usually **KEEP**
+2. **Low confidence (1-49%)** = Reachable from entrypoints - Check if ACTUALLY called
+3. **High confidence (80-100%)** = Likely truly dead - Verify no dynamic usage
+4. **100% confidence in orphaned files** = Entire file unreachable - Usually **DELETE**
+
+For EACH item, determine:
+- **DELETE**: Confirmed dead code, safe to remove
+- **KEEP**: False positive, should not be removed (entrypoint, dynamic usage, public API)
+- **UNCERTAIN**: Needs more investigation
 
 ## Response Format
 
-Respond with EXACTLY this format:
+Return a JSON array with your verdicts. Include ALL items from the list above.
 
-VERDICT: DELETE|KEEP|UNCERTAIN
+```json
+{
+  "verified_items": [
+    {
+      "qualified_name": "module.function_name",
+      "verdict": "DELETE",
+      "reasoning": "Brief explanation why this is dead code"
+    },
+    {
+      "qualified_name": "app.index",
+      "verdict": "KEEP",
+      "reasoning": "Flask route entrypoint, will be called by web requests"
+    }
+  ]
+}
+```
 
-REASONING: <Your explanation in 1-2 sentences>
-"""
+Now analyze all items and return the complete JSON:
+""")
+
+    return "".join(prompt_parts)
 
 
-def _execute_llm(llm_tool: str, prompt: str, project_path: Path, timeout: int) -> str:
-    """Execute LLM CLI and return response."""
+def _execute_llm_oneshot(
+    llm_tool: str,
+    prompt: str,
+    project_path: Path,
+    timeout: int,
+) -> str:
+    """Execute LLM CLI with oneshot prompt and return response."""
     if llm_tool == "claude":
+        # Use --print for non-interactive mode
         cmd = ["claude", "--print", prompt]
     elif llm_tool == "opencode":
-        # opencode run [message..] for non-interactive
         cmd = ["opencode", "run", prompt]
     elif llm_tool == "kimi":
-        # kimi --print -p <prompt> for non-interactive
         cmd = ["kimi", "--print", "-p", prompt]
     else:
         cmd = [llm_tool, prompt]
@@ -207,59 +245,125 @@ def _execute_llm(llm_tool: str, prompt: str, project_path: Path, timeout: int) -
             timeout=timeout,
             cwd=project_path,
         )
-        return result.stdout if result.returncode == 0 else f"ERROR: {result.stderr}"
+        if result.returncode != 0:
+            return f"ERROR: {result.stderr}"
+        return result.stdout
     except subprocess.TimeoutExpired:
-        return "ERROR: LLM timed out"
+        return f"ERROR: LLM timed out after {timeout}s"
     except Exception as e:
         return f"ERROR: {e}"
 
 
-def _parse_response(response: str) -> tuple[LLMVerdict, str]:
-    """Parse LLM response to extract verdict and reasoning."""
-    import re
+def _parse_oneshot_response(
+    response: str,
+    candidates: list[dict],
+) -> list[VerifiedItem]:
+    """Parse the oneshot response to extract all verdicts."""
+    verified_items: list[VerifiedItem] = []
 
-    response = response.strip()
+    # Try to extract JSON from response
+    json_match = re.search(r"\{[\s\S]*\"verified_items\"[\s\S]*\}", response)
 
-    # Try structured format
-    verdict_match = re.search(r"VERDICT:\s*(DELETE|KEEP|UNCERTAIN)", response, re.IGNORECASE)
-    reasoning_match = re.search(
-        r"REASONING:\s*(.+?)(?:$|VERDICT:)", response, re.DOTALL | re.IGNORECASE
-    )
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            items_data = data.get("verified_items", [])
 
-    if verdict_match:
-        verdict_str = verdict_match.group(1).upper()
-        verdict = LLMVerdict[verdict_str]
-        reasoning = reasoning_match.group(1).strip() if reasoning_match else response
-        return verdict, reasoning
+            # Build lookup for candidates
+            candidate_lookup = {}
+            for c in candidates:
+                qname = c.get("qualified_name", "")
+                name = c.get("name", "")
+                candidate_lookup[qname] = c
+                candidate_lookup[name] = c
 
-    # Fallback: heuristic parsing
-    response_lower = response.lower()
+            for item_data in items_data:
+                qname = item_data.get("qualified_name", "")
+                verdict_str = item_data.get("verdict", "UNCERTAIN").upper()
+                reasoning = item_data.get("reasoning", item_data.get("llm_reasoning", ""))
 
-    delete_indicators = [
-        "can be safely removed",
-        "should be deleted",
-        "is dead code",
-        "safe to delete",
-        "definitely unused",
+                # Map to original candidate
+                original = candidate_lookup.get(qname, {})
+
+                try:
+                    verdict = LLMVerdict[verdict_str]
+                except KeyError:
+                    verdict = LLMVerdict.UNCERTAIN
+
+                verified_items.append(
+                    VerifiedItem(
+                        qualified_name=qname,
+                        name=original.get("name", qname.split(".")[-1]),
+                        type=original.get("type", "unknown"),
+                        file=Path(original.get("file", "")),
+                        line=original.get("line", 0),
+                        end_line=original.get("end_line"),
+                        original_confidence=original.get("confidence", 0),
+                        reasons=original.get("reasons", []),
+                        code_preview=original.get("code_preview"),
+                        verdict=verdict,
+                        llm_reasoning=reasoning,
+                        verified_at=datetime.now(),
+                    )
+                )
+
+            return verified_items
+
+        except json.JSONDecodeError:
+            console.print("[yellow]Warning: Could not parse JSON, falling back to heuristic parsing[/]")
+
+    # Fallback: parse individual verdicts from text
+    for candidate in candidates:
+        qname = candidate.get("qualified_name", "")
+        name = candidate.get("name", "")
+
+        verdict, reasoning = _parse_item_from_text(response, qname, name)
+
+        verified_items.append(
+            VerifiedItem(
+                qualified_name=qname,
+                name=name,
+                type=candidate.get("type", "unknown"),
+                file=Path(candidate.get("file", "")),
+                line=candidate.get("line", 0),
+                end_line=candidate.get("end_line"),
+                original_confidence=candidate.get("confidence", 0),
+                reasons=candidate.get("reasons", []),
+                code_preview=candidate.get("code_preview"),
+                verdict=verdict,
+                llm_reasoning=reasoning,
+                verified_at=datetime.now(),
+            )
+        )
+
+    return verified_items
+
+
+def _parse_item_from_text(
+    response: str,
+    qualified_name: str,
+    name: str,
+) -> tuple[LLMVerdict, str]:
+    """Parse verdict for a specific item from unstructured text."""
+    # Look for mentions of this item
+    patterns = [
+        rf"`?{re.escape(qualified_name)}`?.*?(DELETE|KEEP|UNCERTAIN)",
+        rf"`?{re.escape(name)}`?.*?(DELETE|KEEP|UNCERTAIN)",
+        rf"(DELETE|KEEP|UNCERTAIN).*?`?{re.escape(qualified_name)}`?",
+        rf"(DELETE|KEEP|UNCERTAIN).*?`?{re.escape(name)}`?",
     ]
 
-    keep_indicators = [
-        "should not be deleted",
-        "is still used",
-        "false positive",
-        "do not remove",
-        "may be called",
-    ]
+    for pattern in patterns:
+        match = re.search(pattern, response, re.IGNORECASE)
+        if match:
+            verdict_str = match.group(1).upper()
+            try:
+                return LLMVerdict[verdict_str], f"Extracted from response for {name}"
+            except KeyError:
+                pass
 
-    for indicator in delete_indicators:
-        if indicator in response_lower:
-            return LLMVerdict.DELETE, response
-
-    for indicator in keep_indicators:
-        if indicator in response_lower:
-            return LLMVerdict.KEEP, response
-
-    return LLMVerdict.UNCERTAIN, response
+    # Default to uncertain
+    return LLMVerdict.UNCERTAIN, "Could not determine verdict from response"
 
 
 def _build_results(
@@ -283,7 +387,7 @@ def _build_results(
             "verified_at": datetime.now().isoformat(),
             "llm_tool": llm_tool,
             "min_confidence": min_confidence,
-            "mode": "batch",
+            "mode": "oneshot",
         },
         summary=summary,
         verified_items=verified_items,
@@ -303,7 +407,7 @@ def _build_empty_results(
             "verified_at": datetime.now().isoformat(),
             "llm_tool": llm_tool,
             "min_confidence": min_confidence,
-            "mode": "batch",
+            "mode": "oneshot",
         },
         summary=VerificationSummary(skipped_count=len(skipped_items)),
         skipped_items=skipped_items,
@@ -312,8 +416,6 @@ def _build_empty_results(
 
 def _display_summary(results: VerificationResults) -> None:
     """Display verification summary."""
-    from rich.panel import Panel
-
     if not results.summary:
         return
 

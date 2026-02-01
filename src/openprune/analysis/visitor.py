@@ -404,6 +404,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
                             symbol_name=str(node.args[1].value),
                             context=UsageContext.ATTRIBUTE,
                             location=self._make_location(node.args[1]),
+                            caller=self._get_current_caller(),
                         )
                     )
 
@@ -418,6 +419,13 @@ class DeadCodeVisitor(ast.NodeVisitor):
         self.visit(node.value)
         self.visit(node.slice)
 
+    def _get_current_caller(self) -> str | None:
+        """Get qualified name of current function/method scope."""
+        for scope in reversed(self.scope_stack):
+            if scope.type in ("function", "method"):
+                return scope.qualified_name
+        return None  # Module-level code
+
     def _record_usage(self, node: ast.expr, context: UsageContext) -> None:
         """Record a usage of a name."""
         name = self._extract_name(node)
@@ -427,6 +435,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
                     symbol_name=name,
                     context=context,
                     location=self._make_location(node),
+                    caller=self._get_current_caller(),
                 )
             )
 

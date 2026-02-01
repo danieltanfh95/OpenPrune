@@ -116,6 +116,26 @@ class NoqaSkipped:
 
 
 @dataclass
+class OrphanedFile:
+    """An entire file that is unreachable from any entrypoint."""
+
+    file: str
+    module_name: str
+    symbols: int  # Number of symbols in this file
+    lines: int  # Total lines in file
+    reason: str = "Not imported by any reachable module"
+
+    def to_dict(self) -> dict:
+        return {
+            "file": self.file,
+            "module_name": self.module_name,
+            "symbols": self.symbols,
+            "lines": self.lines,
+            "reason": self.reason,
+        }
+
+
+@dataclass
 class AnalysisResults:
     """Complete analysis results."""
 
@@ -123,6 +143,7 @@ class AnalysisResults:
     metadata: AnalysisMetadata | None = None
     summary: AnalysisSummary | None = None
     entrypoints: list[EntrypointInfo] = field(default_factory=list)
+    orphaned_files: list[OrphanedFile] = field(default_factory=list)
     dead_code: list[DeadCodeItem] = field(default_factory=list)
     dependency_tree: dict = field(default_factory=dict)
     noqa_skipped: list[NoqaSkipped] = field(default_factory=list)
@@ -137,6 +158,7 @@ class AnalysisResults:
             result["summary"] = self.summary.to_dict()
 
         result["entrypoints"] = [ep.to_dict() for ep in self.entrypoints]
+        result["orphaned_files"] = [of.to_dict() for of in self.orphaned_files]
         result["dead_code"] = [dc.to_dict() for dc in self.dead_code]
         result["dependency_tree"] = self.dependency_tree
         result["noqa_skipped"] = [ns.to_dict() for ns in self.noqa_skipped]

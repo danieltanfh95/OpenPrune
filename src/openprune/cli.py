@@ -27,18 +27,21 @@ from openprune.config import (
     get_analysis_excludes,
     get_analysis_includes,
     get_entrypoint_types_to_mark,
+    get_ignore_decorators,
     get_noqa_patterns,
     load_config,
     should_respect_noqa,
 )
 from openprune.detection.archetype import ArchetypeDetector
-from openprune.models.dependency import DependencyNode, Symbol, SymbolType
+from openprune.analysis.visitor import FileAnalysisResult
+from openprune.models.dependency import DependencyNode, Symbol, SymbolType, Usage
 from openprune.models.results import (
     AnalysisMetadata,
     AnalysisResults,
     AnalysisSummary,
     DeadCodeItem,
     NoqaSkipped,
+    OrphanedFile,
 )
 from openprune.output.json_writer import write_config, write_results
 from openprune.output.tree import build_results_tree, build_summary_tree, display_tree
@@ -481,6 +484,9 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     noqa_patterns = get_noqa_patterns(config)
     respect_noqa = should_respect_noqa(config)
 
+    # Get ignore_decorators patterns
+    ignore_decorators = get_ignore_decorators(config)
+
     # Find all Python files
     py_files = _find_python_files(path, includes, excludes)
 
@@ -489,7 +495,8 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     # Analyze all files
     all_definitions: dict[str, Symbol] = {}
     all_usages: set[str] = set()
-    file_results: dict[Path, dict] = {}
+    all_usages_list: list[Usage] = []  # For call graph
+    file_results: dict[Path, FileAnalysisResult] = {}
     noqa_skipped: list[NoqaSkipped] = []
 
     with Progress(
@@ -507,11 +514,7 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
                 progress.update(parse_task, advance=1)
                 continue
 
-            file_results[py_file] = {
-                "definitions": result.definitions,
-                "usages": result.usages,
-                "imports": result.imports,
-            }
+            file_results[py_file] = result
 
             # Collect definitions, filtering those with noqa comments
             for qname, symbol in result.definitions.items():
@@ -531,11 +534,16 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
                         )
                         continue  # Skip this definition
 
+                # Skip symbols with ignored decorators
+                if _should_ignore_by_decorator(symbol, ignore_decorators):
+                    continue
+
                 all_definitions[qname] = symbol
 
             # Collect usages
             for usage in result.usages:
                 all_usages.add(usage.symbol_name)
+                all_usages_list.append(usage)
 
             progress.update(parse_task, advance=1)
 
@@ -551,6 +559,72 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     # Get entrypoint types to mark as used
     entrypoint_types = get_entrypoint_types_to_mark(config)
 
+    # Build call graph and find reachable symbols
+    console.print("[dim]Building call graph and analyzing reachability...[/]")
+    call_graph = _build_call_graph(all_definitions, all_usages_list)
+
+    # Map entrypoint types to decorator patterns
+    entrypoint_decorator_patterns = {
+        "flask_route": ["route", "get", "post", "put", "delete", "patch"],
+        "flask_blueprint": ["route", "get", "post", "put", "delete", "patch"],
+        "flask_hook": ["before_request", "after_request", "teardown_request", "before_first_request"],
+        "flask_errorhandler": ["errorhandler"],
+        "flask_cli": ["cli.command", "command"],
+        "celery_task": ["task"],
+        "celery_shared_task": ["shared_task"],
+        "celery_signal": ["connect"],
+        "fastapi_route": ["get", "post", "put", "delete", "patch"],
+        "click_command": ["command"],
+        "factory_function": [],  # Matched by name, not decorator
+        "main_block": [],  # Not a decorator-based entrypoint
+    }
+
+    # Mark symbols as entrypoints based on decorators
+    for qname, symbol in all_definitions.items():
+        # Check if symbol name matches factory function pattern
+        if "factory_function" in entrypoint_types and symbol.name in {
+            "create_app", "make_app", "make_celery", "create_celery", "app_factory"
+        }:
+            symbol.is_entrypoint = True
+            continue
+
+        # Check decorators against patterns
+        for dec in symbol.decorators:
+            dec_lower = dec.lower()
+            for ep_type in entrypoint_types:
+                patterns = entrypoint_decorator_patterns.get(ep_type, [])
+                for pattern in patterns:
+                    if pattern in dec_lower:
+                        symbol.is_entrypoint = True
+                        break
+                if symbol.is_entrypoint:
+                    break
+            if symbol.is_entrypoint:
+                break
+
+    # Collect entrypoint qualified names
+    entrypoint_qnames: set[str] = {
+        qname for qname, sym in all_definitions.items() if sym.is_entrypoint
+    }
+
+    # Find all reachable symbols from entrypoints
+    reachable_symbols = _find_reachable_symbols(entrypoint_qnames, call_graph)
+
+    # Find reachable modules (for orphaned file detection)
+    entrypoint_files = {
+        symbol.location.file
+        for qname, symbol in all_definitions.items()
+        if symbol.is_entrypoint
+    }
+    reachable_modules = _find_reachable_modules(entrypoint_files, file_results)
+
+    # All analyzed modules
+    all_modules = {py_file.stem for py_file in py_files}
+    orphaned_modules = all_modules - reachable_modules
+
+    if orphaned_modules:
+        console.print(f"[dim]Found {len(orphaned_modules)} orphaned modules[/]")
+
     # Score all definitions
     console.print("[dim]Calculating suspicion scores...[/]")
     scorer = SuspicionScorer()
@@ -560,15 +634,23 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
         # Create a node for scoring
         node = DependencyNode(symbol=symbol)
 
-        # Check if it's an entrypoint type
-        for dec in symbol.decorators:
-            for ep_type in entrypoint_types:
-                if ep_type.lower() in dec.lower():
-                    symbol.is_entrypoint = True
-                    break
-
         # Score the node
         confidence, reasons = scorer.score(node, all_usages, file_age_info)
+
+        # Check module-level reachability
+        module_name = symbol.location.file.stem
+        if module_name in orphaned_modules:
+            # Entire file is orphaned - very high confidence
+            confidence = 100
+            reasons = ["Entire file is unreachable from any entrypoint"]
+        elif qname not in reachable_symbols and entrypoint_qnames:
+            # Symbol is in a reachable file but not called from entrypoints
+            confidence = min(confidence + 30, 100)
+            if "Not reachable from any entrypoint" not in reasons:
+                reasons.append("Not reachable from any entrypoint")
+        elif qname in reachable_symbols:
+            # Symbol is reachable - lower confidence
+            confidence = max(confidence - 20, 0)
 
         # Determine dead code type
         dead_type = _get_dead_code_type(symbol)
@@ -591,6 +673,28 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     # Sort by confidence (highest first)
     dead_code.sort(key=lambda x: x.confidence, reverse=True)
 
+    # Build orphaned files list
+    orphaned_file_list: list[OrphanedFile] = []
+    for py_file in py_files:
+        if py_file.stem in orphaned_modules:
+            result = file_results.get(py_file)
+            if result:
+                # Count symbols and lines
+                symbol_count = len(result.definitions)
+                try:
+                    line_count = len(py_file.read_text().splitlines())
+                except Exception:
+                    line_count = 0
+
+                orphaned_file_list.append(
+                    OrphanedFile(
+                        file=str(py_file),
+                        module_name=py_file.stem,
+                        symbols=symbol_count,
+                        lines=line_count,
+                    )
+                )
+
     # Calculate duration
     duration_ms = int((time.time() - start_time) * 1000)
 
@@ -609,6 +713,7 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
             analysis_duration_ms=duration_ms,
         ),
         summary=summary,
+        orphaned_files=orphaned_file_list,
         dead_code=dead_code,
         dependency_tree=import_graph.to_dict(),
         noqa_skipped=noqa_skipped,
@@ -668,6 +773,105 @@ def _find_python_files(
             py_files.append(py_file)
 
     return py_files
+
+
+def _should_ignore_by_decorator(symbol: Symbol, patterns: list[str]) -> bool:
+    """Check if symbol has a decorator matching ignore patterns."""
+    for decorator in symbol.decorators:
+        for pattern in patterns:
+            # Strip leading @ from both
+            pattern_clean = pattern.lstrip("@")
+            decorator_clean = decorator.lstrip("@")
+
+            # Try glob match (e.g., "pytest.mark.*")
+            if fnmatch.fnmatch(decorator_clean, pattern_clean):
+                return True
+
+            # Also check if pattern is contained (e.g., "abstractmethod" in "@abc.abstractmethod")
+            if pattern_clean in decorator_clean:
+                return True
+
+    return False
+
+
+def _build_call_graph(
+    all_definitions: dict[str, Symbol],
+    all_usages: list[Usage],
+) -> dict[str, set[str]]:
+    """Build graph of caller -> callees (qualified names)."""
+    graph: dict[str, set[str]] = {qname: set() for qname in all_definitions}
+
+    for usage in all_usages:
+        if usage.caller and usage.caller in graph:
+            # Try to resolve the usage to a known definition
+            for qname in all_definitions:
+                if qname.endswith(f".{usage.symbol_name}"):
+                    graph[usage.caller].add(qname)
+                    break
+
+    return graph
+
+
+def _find_reachable_symbols(
+    entrypoint_qnames: set[str],
+    call_graph: dict[str, set[str]],
+) -> set[str]:
+    """Find all symbols reachable from entrypoints via call graph."""
+    reachable = set(entrypoint_qnames)
+    to_visit = list(entrypoint_qnames)
+
+    while to_visit:
+        current = to_visit.pop()
+        for callee in call_graph.get(current, set()):
+            if callee not in reachable:
+                reachable.add(callee)
+                to_visit.append(callee)
+
+    return reachable
+
+
+def _find_reachable_modules(
+    entrypoint_files: set[Path],
+    file_results: dict[Path, FileAnalysisResult],
+) -> set[str]:
+    """Find all modules reachable via imports from entrypoint files."""
+    reachable = {f.stem for f in entrypoint_files}
+    to_visit = list(reachable)
+
+    # Build module import graph
+    module_imports: dict[str, set[str]] = {}
+    for py_file, result in file_results.items():
+        module_imports[py_file.stem] = {
+            imp.module.split(".")[0]  # Get top-level module
+            for imp in result.imports
+            if imp.module
+        }
+
+    while to_visit:
+        current = to_visit.pop()
+        for imported in module_imports.get(current, set()):
+            if imported not in reachable:
+                reachable.add(imported)
+                to_visit.append(imported)
+
+    return reachable
+
+
+def _get_entrypoint_qnames(
+    entrypoints: list,  # list of Entrypoint from archetype
+    all_definitions: dict[str, Symbol],
+) -> set[str]:
+    """Get qualified names of all entrypoint symbols."""
+    entrypoint_qnames: set[str] = set()
+
+    for ep in entrypoints:
+        # Match by file and name
+        for qname, symbol in all_definitions.items():
+            if str(symbol.location.file) == ep.file and symbol.name == ep.name:
+                entrypoint_qnames.add(qname)
+                break
+
+    return entrypoint_qnames
 
 
 def _get_dead_code_type(symbol: Symbol) -> str:

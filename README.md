@@ -219,8 +219,7 @@ Edit `.openprune/config.json` to customize:
   "linting": {
     "respect_noqa": true,
     "noqa_patterns": ["# noqa", "# type: ignore"],
-    "ignore_decorators": ["@pytest.fixture", "@abstractmethod"],
-    "ignore_names": ["_*", "__*__", "test_*"]
+    "ignore_decorators": ["@pytest.fixture", "@abstractmethod", "@property"]
   }
 }
 ```

@@ -11,28 +11,54 @@ OpenPrune is a static analysis tool that detects potentially dead code in Python
 ## Files in .openprune/
 
 - `config.json` - Project configuration and detected frameworks
-- `results.json` - Dead code candidates with confidence scores
+- `results.json` - Dead code candidates with confidence scores and reachability info
 - `verified.json` - Your verification results will be saved here
+
+## Understanding Confidence Scores
+
+OpenPrune uses entrypoint-based reachability analysis:
+
+- **100% confidence**: Symbol is in an orphaned file (entire file unreachable from entrypoints) OR has zero references
+- **High confidence (80-99%)**: Not reachable from entrypoints via call graph
+- **Medium confidence (50-79%)**: Reachable from entrypoints but may still be unused
+- **Low confidence (0-49%)**: Reachable from entrypoints, or is itself an entrypoint (0%)
+
+**IMPORTANT**: Low confidence items are NOT necessarily safe! They need MORE verification:
+- 0% confidence = detected as entrypoint (Flask route, Celery task) - usually KEEP
+- Low confidence = reachable from entrypoints via call chain - check if actually called
 
 ## Your Task
 
-Help the user review each dead code item in `results.json` and determine:
+Help the user review dead code items and determine:
 - **DELETE**: Confirmed dead code, safe to remove
 - **KEEP**: False positive, should not be removed
 - **UNCERTAIN**: Needs more investigation
 
-For each item, consider:
-1. Could it be called dynamically (getattr, reflection, string-based imports)?
-2. Is it a public API that external code might depend on?
-3. Are there framework-specific patterns (decorators, magic methods) that might invoke it?
-4. Could it be used in tests, scripts, or CLI commands not captured by static analysis?
+## Verification Strategy
+
+**For HIGH confidence items (80-100%)**:
+- These are likely truly dead - verify no dynamic/reflection usage
+- Check if part of public API that external code might use
+- If in orphaned file, likely safe to DELETE
+
+**For LOW confidence items (0-49%)**:
+- These are reachable from entrypoints - check if ACTUALLY called
+- Read the calling functions to verify the call chain exists
+- 0% confidence items are entrypoints - usually KEEP unless deprecated
+
+**For ALL items**:
+1. Read the source file containing the symbol
+2. Search for usages in other files using grep/search
+3. Check for dynamic patterns (getattr, importlib, string-based references)
 
 ## How to Work
 
-1. Read `.openprune/results.json` to see the dead code candidates
-2. For each high-confidence item, examine the actual source code
-3. Make a verdict and explain your reasoning
-4. Update `.openprune/verified.json` with your verdicts
+1. Read `.openprune/results.json` to see ALL dead code candidates
+2. Also read `.openprune/config.json` to understand detected frameworks
+3. For EACH item, examine the actual source code at the file:line
+4. **CRITICAL**: For low confidence items, read the files that supposedly call the symbol
+5. Make a verdict and explain your reasoning
+6. Update `.openprune/verified.json` with your verdicts
 
 ## verified.json Format
 
@@ -86,8 +112,6 @@ def build_system_prompt(project_path: Path, min_confidence: int = 70) -> str:
 
 - **Project Path**: {project_path}
 - **Min Confidence Threshold**: {min_confidence}%
-
-Items with confidence >= {min_confidence}% are the primary focus for verification.
 """)
 
     # Check if results.json exists and add summary
@@ -100,15 +124,24 @@ Items with confidence >= {min_confidence}% are the primary focus for verificatio
                 results = json.load(f)
 
             dead_code = results.get("dead_code", [])
-            high_conf = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
+            orphaned_files = results.get("orphaned_files", [])
+
+            # Categorize by confidence
+            high_conf = [d for d in dead_code if d.get("confidence", 0) >= 80]
+            medium_conf = [d for d in dead_code if 50 <= d.get("confidence", 0) < 80]
+            low_conf = [d for d in dead_code if d.get("confidence", 0) < 50]
 
             prompt_parts.append(f"""
 ## Results Summary
 
-- Total dead code candidates: {len(dead_code)}
-- High confidence items (>= {min_confidence}%): {len(high_conf)}
+- **Orphaned files**: {len(orphaned_files)} (entire files unreachable - high priority)
+- **Total dead code candidates**: {len(dead_code)}
+  - High confidence (80-100%): {len(high_conf)} items
+  - Medium confidence (50-79%): {len(medium_conf)} items
+  - Low confidence (0-49%): {len(low_conf)} items (need careful review!)
 
 Start by reading `.openprune/results.json` to see the full list.
+Then read the actual source files to verify each item.
 """)
         except (json.JSONDecodeError, OSError):
             pass
@@ -134,11 +167,17 @@ def build_combined_prompt(project_path: Path, min_confidence: int = 70) -> str:
 
     initial_task = f"""Start the dead code verification session.
 
-Read .openprune/results.json to see the dead code candidates, then help me review items with confidence >= {min_confidence}%.
+1. First, read .openprune/results.json to see ALL dead code candidates
+2. Review items across ALL confidence levels (not just high confidence!)
+3. For each item:
+   - Read the source file at the specified line
+   - For low confidence items, trace the call chain from entrypoints
+   - Determine: DELETE, KEEP, or UNCERTAIN
 
-For each item, examine the source code and determine if it's truly dead (DELETE), a false positive (KEEP), or needs more investigation (UNCERTAIN).
+**Remember**: Low confidence (0-49%) items need MORE verification, not less!
+They may be reachable from entrypoints but still unused.
 
-Let's begin - show me the high-confidence items first."""
+Let's begin - show me a summary of items by confidence level."""
 
     return f"""{system_prompt}
 
