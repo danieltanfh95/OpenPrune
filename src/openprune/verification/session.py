@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 
-from openprune.verification.prompts import build_system_prompt
+from openprune.verification.prompts import build_combined_prompt, build_system_prompt
 
 
 def launch_llm_session(
@@ -83,6 +83,29 @@ Let's begin - show me the high-confidence items first."""
             "--allowedTools",
             "Read,Write,Edit,Bash",
             initial_prompt,
+        ]
+
+    elif llm_tool == "opencode":
+        # opencode: use project path as positional, --prompt for initial message
+        # No system prompt support - include context in initial prompt
+        combined_prompt = build_combined_prompt(project_path, min_confidence)
+        return [
+            "opencode",
+            str(project_path),
+            "--prompt",
+            combined_prompt,
+        ]
+
+    elif llm_tool == "kimi":
+        # kimi: use -w for working dir, -p for initial prompt
+        # No system prompt support - include context in initial prompt
+        combined_prompt = build_combined_prompt(project_path, min_confidence)
+        return [
+            "kimi",
+            "-w",
+            str(project_path),
+            "-p",
+            combined_prompt,
         ]
 
     else:

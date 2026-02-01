@@ -114,3 +114,36 @@ Start by reading `.openprune/results.json` to see the full list.
             pass
 
     return "\n".join(prompt_parts)
+
+
+def build_combined_prompt(project_path: Path, min_confidence: int = 70) -> str:
+    """
+    Build a combined system+initial prompt for LLMs without system prompt support.
+
+    Tools like opencode and kimi don't have --system-prompt flags, so we combine
+    the context and task into a single initial prompt.
+
+    Args:
+        project_path: Path to the project root
+        min_confidence: Minimum confidence threshold being used
+
+    Returns:
+        Combined prompt string with context and initial task
+    """
+    system_prompt = build_system_prompt(project_path, min_confidence)
+
+    initial_task = f"""Start the dead code verification session.
+
+Read .openprune/results.json to see the dead code candidates, then help me review items with confidence >= {min_confidence}%.
+
+For each item, examine the source code and determine if it's truly dead (DELETE), a false positive (KEEP), or needs more investigation (UNCERTAIN).
+
+Let's begin - show me the high-confidence items first."""
+
+    return f"""{system_prompt}
+
+---
+
+## BEGIN SESSION
+
+{initial_task}"""

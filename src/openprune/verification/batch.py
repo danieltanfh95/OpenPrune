@@ -190,6 +190,12 @@ def _execute_llm(llm_tool: str, prompt: str, project_path: Path, timeout: int) -
     """Execute LLM CLI and return response."""
     if llm_tool == "claude":
         cmd = ["claude", "--print", prompt]
+    elif llm_tool == "opencode":
+        # opencode run [message..] for non-interactive
+        cmd = ["opencode", "run", prompt]
+    elif llm_tool == "kimi":
+        # kimi --print -p <prompt> for non-interactive
+        cmd = ["kimi", "--print", "-p", prompt]
     else:
         cmd = [llm_tool, prompt]
 
