@@ -1,16 +1,57 @@
-"""Entrypoint discovery via AST analysis."""
+"""Entrypoint discovery via AST analysis and plugins."""
+
+from __future__ import annotations
 
 import ast
 from pathlib import Path
 
 from openprune.models.archetype import Entrypoint, EntrypointType
+from openprune.plugins import get_registry
+from openprune.plugins.protocol import DetectedEntrypoint
+
+
+def detect_entrypoints(tree: ast.AST, file_path: Path) -> list[Entrypoint]:
+    """Detect all entrypoints in a file using registered plugins.
+
+    Args:
+        tree: Parsed AST of the file
+        file_path: Path to the file
+
+    Returns:
+        List of detected entrypoints
+    """
+    entrypoints: list[Entrypoint] = []
+    registry = get_registry()
+
+    # Run each plugin's detection
+    for plugin in registry.all_plugins():
+        detected = plugin.detect_entrypoints(tree, file_path)
+        for d in detected:
+            entrypoints.append(_convert_to_entrypoint(d))
+
+    return entrypoints
+
+
+def _convert_to_entrypoint(detected: DetectedEntrypoint) -> Entrypoint:
+    """Convert a plugin DetectedEntrypoint to the model Entrypoint."""
+    return Entrypoint(
+        type=detected.type,
+        name=detected.name,
+        file=detected.file,
+        line=detected.line,
+        decorator=detected.decorator,
+        arguments=detected.arguments if detected.arguments else None,
+    )
 
 
 class EntrypointVisitor(ast.NodeVisitor):
-    """AST visitor to find framework entrypoints."""
+    """AST visitor to find framework entrypoints.
 
-    # Decorator patterns that indicate entrypoints
-    # Maps (object, attribute) tuples to EntrypointType
+    Note: This class is kept for backwards compatibility.
+    New code should use detect_entrypoints() which uses plugins.
+    """
+
+    # Legacy patterns kept for compatibility
     DECORATOR_PATTERNS: dict[tuple[str, ...], EntrypointType] = {
         # Flask routes
         ("app", "route"): EntrypointType.FLASK_ROUTE,
@@ -59,6 +100,16 @@ class EntrypointVisitor(ast.NodeVisitor):
     def __init__(self, file_path: Path) -> None:
         self.file_path = file_path
         self.entrypoints: list[Entrypoint] = []
+
+    def detect_all(self, tree: ast.AST) -> list[Entrypoint]:
+        """Detect entrypoints using plugins and legacy visitor.
+
+        This method uses the plugin system for detection while
+        maintaining backwards compatibility.
+        """
+        # Use plugin-based detection
+        self.entrypoints = detect_entrypoints(tree, self.file_path)
+        return self.entrypoints
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         # Check for factory functions

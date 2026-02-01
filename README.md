@@ -94,6 +94,7 @@ openprune detect ./my-project
 
 Detects:
 - Flask (routes, blueprints, CLI commands)
+- Flask-RESTPlus/Flask-RESTX (Resource classes, HTTP methods)
 - Celery (tasks, shared tasks)
 - Click CLI commands
 - Main blocks (`if __name__ == "__main__"`)
@@ -223,6 +224,36 @@ Edit `.openprune/config.json` to customize:
   }
 }
 ```
+
+## Plugin System
+
+OpenPrune uses a plugin architecture for framework detection. Built-in plugins include:
+
+| Plugin | Detects |
+|--------|---------|
+| `flask` | `@app.route()`, `@bp.route()`, hooks, error handlers, CLI commands |
+| `flask-restplus` | `Resource` subclasses, HTTP methods (`get`, `post`, etc.), `api.add_resource()` |
+| `celery` | `@app.task`, `@shared_task`, signal handlers |
+
+### Flask-RESTPlus/Flask-RESTX Support
+
+OpenPrune automatically detects Flask-RESTPlus patterns:
+
+```python
+from flask_restplus import Resource
+
+class UserResource(Resource):
+    def get(self, user_id):      # Detected as entrypoint
+        return get_user(user_id)
+
+    def put(self, user_id):      # Detected as entrypoint
+        return update_user(user_id)
+
+# Route registration also detected
+api.add_resource(UserResource, "/users/<user_id>")
+```
+
+HTTP methods (`get`, `post`, `put`, `delete`, `patch`, `head`, `options`) on `Resource` subclasses are automatically recognized as entrypoints and won't be flagged as dead code.
 
 ## License
 

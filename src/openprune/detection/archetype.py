@@ -9,7 +9,7 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore
 
-from openprune.detection.entrypoints import EntrypointVisitor
+from openprune.detection.entrypoints import detect_entrypoints
 from openprune.detection.linting import LintingDetector
 from openprune.models.archetype import (
     ArchetypeResult,
@@ -18,34 +18,50 @@ from openprune.models.archetype import (
     FrameworkType,
     LintingConfig,
 )
+from openprune.plugins import get_registry
 
 
-class ArchetypeDetector:
-    """Detect application frameworks and patterns."""
+def _get_import_indicators() -> dict[str, FrameworkType]:
+    """Get import indicators from plugins plus base patterns."""
+    # Start with plugin-provided indicators
+    indicators = get_registry().get_all_import_indicators()
 
-    # Framework indicators: import name -> framework
-    IMPORT_INDICATORS: dict[str, FrameworkType] = {
-        "flask": FrameworkType.FLASK,
-        "Flask": FrameworkType.FLASK,
-        "celery": FrameworkType.CELERY,
-        "Celery": FrameworkType.CELERY,
+    # Add base patterns for frameworks without plugins yet
+    base_patterns = {
         "fastapi": FrameworkType.FASTAPI,
         "FastAPI": FrameworkType.FASTAPI,
         "django": FrameworkType.DJANGO,
         "click": FrameworkType.CLICK,
         "typer": FrameworkType.TYPER,
     }
+    for name, fw in base_patterns.items():
+        if name not in indicators:
+            indicators[name] = fw
 
-    # Requirements file patterns
-    REQUIREMENTS_PATTERNS: dict[str, FrameworkType] = {
+    return indicators
+
+
+def _get_requirements_patterns() -> dict[str, FrameworkType]:
+    """Get requirements patterns from plugins plus base patterns."""
+    patterns: dict[str, FrameworkType] = {
         "flask": FrameworkType.FLASK,
+        "flask-restplus": FrameworkType.FLASK,
+        "flask-restx": FrameworkType.FLASK,
         "celery": FrameworkType.CELERY,
         "fastapi": FrameworkType.FASTAPI,
         "django": FrameworkType.DJANGO,
     }
+    return patterns
+
+
+class ArchetypeDetector:
+    """Detect application frameworks and patterns."""
 
     def __init__(self) -> None:
         self.linting_detector = LintingDetector()
+        # Get indicators from plugins
+        self._import_indicators = _get_import_indicators()
+        self._requirements_patterns = _get_requirements_patterns()
 
     def detect(self, project_path: Path) -> ArchetypeResult:
         """Main detection entry point."""
@@ -91,7 +107,7 @@ class ArchetypeDetector:
         return list(detections.values())
 
     def _detect_entrypoints(self, path: Path) -> list[Entrypoint]:
-        """Find all entrypoints in the project."""
+        """Find all entrypoints in the project using plugins."""
         entrypoints: list[Entrypoint] = []
 
         for py_file in path.rglob("*.py"):
@@ -106,9 +122,9 @@ class ArchetypeDetector:
                 source = py_file.read_text(encoding="utf-8")
                 tree = ast.parse(source, filename=str(py_file))
 
-                visitor = EntrypointVisitor(py_file)
-                visitor.visit(tree)
-                entrypoints.extend(visitor.entrypoints)
+                # Use plugin-based detection
+                file_entrypoints = detect_entrypoints(tree, py_file)
+                entrypoints.extend(file_entrypoints)
             except (SyntaxError, UnicodeDecodeError):
                 continue
 
@@ -151,8 +167,8 @@ class ArchetypeDetector:
 
         for dep in deps:
             dep_name = dep.split("[")[0].split(">")[0].split("<")[0].split("=")[0].lower().strip()
-            if dep_name in self.REQUIREMENTS_PATTERNS:
-                fw = self.REQUIREMENTS_PATTERNS[dep_name]
+            if dep_name in self._requirements_patterns:
+                fw = self._requirements_patterns[dep_name]
                 if fw not in detections:
                     detections[fw] = FrameworkDetection(
                         framework=fw,
@@ -178,8 +194,8 @@ class ArchetypeDetector:
 
             # Extract package name
             pkg_name = line.split("[")[0].split(">")[0].split("<")[0].split("=")[0].lower().strip()
-            if pkg_name in self.REQUIREMENTS_PATTERNS:
-                fw = self.REQUIREMENTS_PATTERNS[pkg_name]
+            if pkg_name in self._requirements_patterns:
+                fw = self._requirements_patterns[pkg_name]
                 if fw not in detections:
                     detections[fw] = FrameworkDetection(
                         framework=fw,
@@ -214,8 +230,8 @@ class ArchetypeDetector:
         detections: dict[FrameworkType, FrameworkDetection],
     ) -> None:
         """Check if an import indicates a framework."""
-        if name in self.IMPORT_INDICATORS:
-            fw = self.IMPORT_INDICATORS[name]
+        if name in self._import_indicators:
+            fw = self._import_indicators[name]
             if fw not in detections:
                 detections[fw] = FrameworkDetection(
                     framework=fw,
