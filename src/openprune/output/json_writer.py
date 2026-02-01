@@ -1,0 +1,134 @@
+"""JSON output writers for config and results."""
+
+import json
+from datetime import datetime
+from pathlib import Path
+
+from openprune.models.archetype import ArchetypeResult, EntrypointType, FrameworkType
+from openprune.models.results import AnalysisResults
+
+
+def write_config(result: ArchetypeResult, output_path: Path) -> None:
+    """Write the open-prune.json configuration file."""
+    config = {
+        "$schema": "https://openprune.dev/schema/config.json",
+        "version": "1.0",
+        "project": {
+            "name": result.project_root.name,
+            "python_version": result.python_version,
+            "root": str(result.project_root),
+        },
+        "frameworks": [
+            {
+                "type": fw.framework.name.lower(),
+                "confidence": fw.confidence,
+                "evidence": fw.evidence[:5],  # Limit to 5 examples
+            }
+            for fw in result.frameworks
+        ],
+        "entrypoints": _build_entrypoint_config(result),
+        "analysis": {
+            "include": ["**/*.py"],
+            "exclude": [
+                "**/__pycache__/**",
+                "**/tests/**",
+                "**/test_*.py",
+                "**/*_test.py",
+                "**/conftest.py",
+                "**/migrations/**",
+                "**/.venv/**",
+                "**/venv/**",
+                "**/node_modules/**",
+            ],
+        },
+        "linting": {
+            "respect_noqa": True,
+            "noqa_patterns": result.linting_config.noqa_patterns,
+            "ignore_decorators": [
+                "@pytest.fixture",
+                "@pytest.mark.*",
+                "@override",
+                "@abstractmethod",
+                "@property",
+            ],
+            "ignore_names": ["_*", "__*__", "test_*", "setUp", "tearDown"],
+            "sources": result.linting_config.sources,
+        },
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+def _build_entrypoint_config(result: ArchetypeResult) -> list[dict]:
+    """Build entrypoint configuration from detected entrypoints."""
+    # Group entrypoints by type
+    type_patterns: dict[str, dict] = {}
+
+    # Add detected patterns
+    for ep in result.entrypoints:
+        type_name = ep.type.name.lower()
+        if type_name not in type_patterns:
+            type_patterns[type_name] = {
+                "type": type_name,
+                "mark_as_used": True,
+            }
+
+    # Add default patterns for detected frameworks
+    framework_types = {fw.framework for fw in result.frameworks}
+
+    if FrameworkType.FLASK in framework_types:
+        type_patterns.setdefault(
+            "flask_route",
+            {"type": "flask_route", "pattern": "@*.route", "mark_as_used": True},
+        )
+        type_patterns.setdefault(
+            "flask_cli",
+            {"type": "flask_cli", "pattern": "@*.cli.command", "mark_as_used": True},
+        )
+
+    if FrameworkType.CELERY in framework_types:
+        type_patterns.setdefault(
+            "celery_task",
+            {"type": "celery_task", "pattern": "@*.task", "mark_as_used": True},
+        )
+        type_patterns.setdefault(
+            "celery_shared_task",
+            {"type": "celery_shared_task", "pattern": "@shared_task", "mark_as_used": True},
+        )
+
+    # Always include these
+    type_patterns.setdefault(
+        "main_block",
+        {"type": "main_block", "pattern": 'if __name__ == "__main__"', "mark_as_used": True},
+    )
+    type_patterns.setdefault(
+        "factory_function",
+        {
+            "type": "factory_function",
+            "names": ["create_app", "make_celery"],
+            "mark_as_used": True,
+        },
+    )
+
+    return list(type_patterns.values())
+
+
+def write_results(results: AnalysisResults, output_path: Path) -> None:
+    """Write the openprune-results.json file."""
+    data = results.to_dict()
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_config(config_path: Path) -> dict:
+    """Load an open-prune.json configuration file."""
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_results(results_path: Path) -> dict:
+    """Load an openprune-results.json file."""
+    with open(results_path, "r", encoding="utf-8") as f:
+        return json.load(f)
