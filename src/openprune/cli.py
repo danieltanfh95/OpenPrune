@@ -21,12 +21,15 @@ from openprune.analysis.scoring import (
     classify_confidence,
     get_file_age_info,
 )
+from openprune.analysis.noqa import is_noqa_suppressed
 from openprune.analysis.visitor import analyze_file
 from openprune.config import (
     get_analysis_excludes,
     get_analysis_includes,
     get_entrypoint_types_to_mark,
+    get_noqa_patterns,
     load_config,
+    should_respect_noqa,
 )
 from openprune.detection.archetype import ArchetypeDetector
 from openprune.models.dependency import DependencyNode, Symbol, SymbolType
@@ -35,6 +38,7 @@ from openprune.models.results import (
     AnalysisResults,
     AnalysisSummary,
     DeadCodeItem,
+    NoqaSkipped,
 )
 from openprune.output.json_writer import write_config, write_results
 from openprune.output.tree import build_results_tree, build_summary_tree, display_tree
@@ -473,6 +477,10 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     includes = get_analysis_includes(config)
     excludes = get_analysis_excludes(config)
 
+    # Get noqa configuration
+    noqa_patterns = get_noqa_patterns(config)
+    respect_noqa = should_respect_noqa(config)
+
     # Find all Python files
     py_files = _find_python_files(path, includes, excludes)
 
@@ -482,6 +490,7 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     all_definitions: dict[str, Symbol] = {}
     all_usages: set[str] = set()
     file_results: dict[Path, dict] = {}
+    noqa_skipped: list[NoqaSkipped] = []
 
     with Progress(
         SpinnerColumn(),
@@ -504,8 +513,27 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
                 "imports": result.imports,
             }
 
-            # Collect definitions and usages
-            all_definitions.update(result.definitions)
+            # Collect definitions, filtering those with noqa comments
+            for qname, symbol in result.definitions.items():
+                line = symbol.location.line
+                comment = result.line_comments.get(line)
+
+                if respect_noqa and comment:
+                    match = is_noqa_suppressed(comment, noqa_patterns)
+                    if match.matched:
+                        noqa_skipped.append(
+                            NoqaSkipped(
+                                file=str(py_file),
+                                line=line,
+                                comment=comment,
+                                symbol=qname,
+                            )
+                        )
+                        continue  # Skip this definition
+
+                all_definitions[qname] = symbol
+
+            # Collect usages
             for usage in result.usages:
                 all_usages.add(usage.symbol_name)
 
@@ -583,7 +611,12 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
         summary=summary,
         dead_code=dead_code,
         dependency_tree=import_graph.to_dict(),
+        noqa_skipped=noqa_skipped,
     )
+
+    # Show noqa skipped count if any
+    if noqa_skipped:
+        console.print(f"[dim]Skipped {len(noqa_skipped)} items due to noqa comments[/]")
 
     return results
 
@@ -624,6 +657,10 @@ def _find_python_files(
         included = False
         for pattern in includes:
             if fnmatch.fnmatch(rel_str, pattern):
+                included = True
+                break
+            # Handle **/*.py matching files at root level
+            if pattern.startswith("**/") and fnmatch.fnmatch(rel_str, pattern[3:]):
                 included = True
                 break
 

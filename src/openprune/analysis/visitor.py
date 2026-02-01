@@ -1,7 +1,9 @@
 """AST visitor for collecting symbol definitions and usages."""
 
 import ast
+import tokenize
 from dataclasses import dataclass, field
+from io import StringIO
 from pathlib import Path
 
 from openprune.models.dependency import (
@@ -40,7 +42,21 @@ class FileAnalysisResult:
     definitions: dict[str, Symbol] = field(default_factory=dict)
     usages: list[Usage] = field(default_factory=list)
     imports: list[ImportInfo] = field(default_factory=list)
+    line_comments: dict[int, str] = field(default_factory=dict)
     error: str | None = None
+
+
+def extract_line_comments(source: str) -> dict[int, str]:
+    """Extract comments by line number using Python's tokenizer."""
+    comments: dict[int, str] = {}
+    try:
+        tokens = tokenize.generate_tokens(StringIO(source).readline)
+        for tok in tokens:
+            if tok.type == tokenize.COMMENT:
+                comments[tok.start[0]] = tok.string
+    except tokenize.TokenizeError:
+        pass
+    return comments
 
 
 class DeadCodeVisitor(ast.NodeVisitor):
@@ -447,6 +463,9 @@ def analyze_file(file_path: Path, module_name: str | None = None) -> FileAnalysi
         source = file_path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(file_path))
 
+        # Extract comments for noqa filtering
+        line_comments = extract_line_comments(source)
+
         visitor = DeadCodeVisitor(file_path, module_name)
         visitor.visit(tree)
 
@@ -454,10 +473,11 @@ def analyze_file(file_path: Path, module_name: str | None = None) -> FileAnalysi
             definitions=visitor.definitions,
             usages=visitor.usages,
             imports=visitor.imports,
+            line_comments=line_comments,
         )
     except SyntaxError as e:
         return FileAnalysisResult(error=f"Syntax error at line {e.lineno}: {e.msg}")
     except UnicodeDecodeError as e:
         return FileAnalysisResult(error=f"Unicode decode error: {e}")
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         return FileAnalysisResult(error=f"Error: {e}")

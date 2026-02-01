@@ -9,7 +9,7 @@ Existing tools like `vulture`, `deadcode`, and `flake8` don't adequately handle 
 OpenPrune:
 
 1. **Auto-detects** Python app types to find entrypoints (Flask routes, Celery tasks, CLI commands)
-2. **Performs AST-level analysis** to trace symbol usage from entrypoints, ranking potential deletions via references, git age, and file age
+2. **Performs AST-level analysis** to trace symbol usage from entrypoints
 3. **Hands off to an LLM** for verification—static analysis does the heavy lifting, LLM resolves edge cases
 
 This approach avoids flaky context engineering and token wastage from feeding entire codebases to LLMs.
@@ -184,6 +184,28 @@ Higher confidence = more likely to be truly dead code.
 ╰─────────────────────────────────────────────────────────╯
 ```
 
+## Noqa Support
+
+OpenPrune respects `# noqa` comments, which is essential for:
+
+- **Celery task registration** — Importing tasks to register them with the Celery app
+- **Side-effect imports** — Modules that perform setup when imported
+- **Re-exports** — Public API modules that import and expose symbols
+
+```python
+# These imports won't be flagged as dead code:
+from app.tasks import send_email  # noqa: F401
+import celery_config  # noqa
+from typing import TYPE_CHECKING  # type: ignore
+```
+
+**Supported patterns:**
+- `# noqa` — Suppress all checks
+- `# noqa: F401` — Suppress specific code(s)
+- `# type: ignore` — Type checking suppression
+
+To disable noqa handling, set `respect_noqa: false` in the config.
+
 ## Configuration
 
 Edit `.openprune/config.json` to customize:
@@ -196,6 +218,7 @@ Edit `.openprune/config.json` to customize:
   },
   "linting": {
     "respect_noqa": true,
+    "noqa_patterns": ["# noqa", "# type: ignore"],
     "ignore_decorators": ["@pytest.fixture", "@abstractmethod"],
     "ignore_names": ["_*", "__*__", "test_*"]
   }
