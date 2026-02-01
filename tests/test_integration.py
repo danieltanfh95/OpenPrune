@@ -516,3 +516,74 @@ class TestResultsModel:
         assert "orphaned_files" in data
         assert len(data["orphaned_files"]) == 1
         assert data["orphaned_files"][0]["module_name"] == "file"
+
+
+class TestExclusionIntegration:
+    """Tests for .gitignore and pyproject.toml exclusion in the full pipeline."""
+
+    def test_respects_gitignore(self, tmp_path: Path) -> None:
+        """Should respect .gitignore patterns during detection."""
+        # Create project structure
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("from flask import Flask\napp = Flask(__name__)")
+        (tmp_path / "ignored_dir").mkdir()
+        (tmp_path / "ignored_dir" / "hidden.py").write_text("def hidden(): pass")
+
+        # Create .gitignore that excludes ignored_dir
+        (tmp_path / ".gitignore").write_text("ignored_dir/\n")
+
+        detector = ArchetypeDetector()
+        result = detector.detect(tmp_path)
+
+        # Should detect Flask from src/app.py
+        framework_types = [fw.framework.name for fw in result.frameworks]
+        assert "FLASK" in framework_types
+
+        # Entrypoints should NOT include anything from ignored_dir
+        for ep in result.entrypoints:
+            assert "ignored_dir" not in str(ep.file)
+
+    def test_respects_pyproject_ruff_excludes(self, tmp_path: Path) -> None:
+        """Should respect [tool.ruff].exclude patterns."""
+        # Create project structure
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("def main(): pass")
+        (tmp_path / "migrations").mkdir()
+        (tmp_path / "migrations" / "001_initial.py").write_text("def migrate(): pass")
+
+        # Create pyproject.toml with ruff exclude
+        (tmp_path / "pyproject.toml").write_text('''
+[tool.ruff]
+exclude = ["migrations"]
+''')
+
+        detector = ArchetypeDetector()
+        result = detector.detect(tmp_path)
+
+        # Entrypoints should NOT include anything from migrations
+        for ep in result.entrypoints:
+            assert "migrations" not in str(ep.file)
+
+    def test_include_ignored_flag_bypasses_gitignore(self, tmp_path: Path) -> None:
+        """--include-ignored should scan files that would normally be excluded."""
+        # Create project with gitignore
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("from flask import Flask")
+        (tmp_path / "ignored").mkdir()
+        (tmp_path / "ignored" / "extra.py").write_text("from celery import Celery")
+        (tmp_path / ".gitignore").write_text("ignored/\n")
+
+        # Without include_ignored - should not find celery
+        detector_normal = ArchetypeDetector(include_ignored=False)
+        result_normal = detector_normal.detect(tmp_path)
+        normal_frameworks = {fw.framework.name for fw in result_normal.frameworks}
+
+        # With include_ignored - should find celery
+        detector_ignored = ArchetypeDetector(include_ignored=True)
+        result_ignored = detector_ignored.detect(tmp_path)
+        ignored_frameworks = {fw.framework.name for fw in result_ignored.frameworks}
+
+        assert "FLASK" in normal_frameworks
+        assert "CELERY" not in normal_frameworks  # Ignored by gitignore
+        assert "FLASK" in ignored_frameworks
+        assert "CELERY" in ignored_frameworks  # Include-ignored bypasses gitignore

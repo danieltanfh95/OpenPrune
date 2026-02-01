@@ -176,7 +176,6 @@ class TestDockerComposeDetection:
 
     def test_detects_command_list(self, tmp_path: Path) -> None:
         """Detect command as list."""
-        pytest.importorskip("yaml")
 
         compose = tmp_path / "docker-compose.yml"
         compose.write_text("""
@@ -194,7 +193,6 @@ services:
 
     def test_detects_entrypoint_string(self, tmp_path: Path) -> None:
         """Detect entrypoint as string."""
-        pytest.importorskip("yaml")
 
         compose = tmp_path / "docker-compose.yml"
         compose.write_text("""
@@ -214,7 +212,6 @@ services:
 
     def test_follows_shell_script_entrypoint(self, tmp_path: Path) -> None:
         """Follow shell script in docker-compose entrypoint."""
-        pytest.importorskip("yaml")
 
         compose = tmp_path / "docker-compose.yml"
         compose.write_text("""
@@ -348,7 +345,6 @@ class TestGitlabCIDetection:
 
     def test_detects_script_python_commands(self, tmp_path: Path) -> None:
         """Detect Python commands in script sections."""
-        pytest.importorskip("yaml")
 
         ci_file = tmp_path / ".gitlab-ci.yml"
         ci_file.write_text("""

@@ -110,9 +110,14 @@ def run(
         "-i/-I",
         help="Enable/disable interactive mode",
     ),
+    include_ignored: bool = typer.Option(
+        False,
+        "--include-ignored",
+        help="Include files normally excluded by .gitignore and pyproject.toml",
+    ),
 ) -> None:
     """Run full detection and analysis (default command)."""
-    run_interactive(path, config, output, verbose, interactive)
+    run_interactive(path, config, output, verbose, interactive, include_ignored)
 
 
 @app.command()
@@ -126,6 +131,11 @@ def detect(
         "--output",
         "-o",
         help="Path for config JSON output (default: .openprune/config.json)",
+    ),
+    include_ignored: bool = typer.Option(
+        False,
+        "--include-ignored",
+        help="Include files normally excluded by .gitignore and pyproject.toml",
     ),
 ) -> None:
     """Run archetype detection and generate config file."""
@@ -146,7 +156,7 @@ def detect(
     ) as progress:
         task = progress.add_task("Detecting application archetype...", total=None)
 
-        detector = ArchetypeDetector()
+        detector = ArchetypeDetector(include_ignored=include_ignored)
         result = detector.detect(path)
 
         progress.update(task, completed=True)
@@ -183,6 +193,11 @@ def analyze(
         "-v",
         help="Show full tree in CLI",
     ),
+    include_ignored: bool = typer.Option(
+        False,
+        "--include-ignored",
+        help="Include files normally excluded by .gitignore and pyproject.toml",
+    ),
 ) -> None:
     """Run full dead code analysis using existing config."""
     path = path.resolve()
@@ -200,7 +215,7 @@ def analyze(
         raise typer.Exit(1)
 
     config_data = load_config(config)
-    results = _run_analysis(path, config_data)
+    results = _run_analysis(path, config_data, include_ignored)
 
     # Write results
     write_results(results, output)
@@ -385,6 +400,7 @@ def run_interactive(
     output_path: Optional[Path],
     verbose: bool,
     interactive: bool,
+    include_ignored: bool = False,
 ) -> None:
     """Run OpenPrune in interactive mode."""
     path = path.resolve()
@@ -405,7 +421,7 @@ def run_interactive(
     ) as progress:
         task = progress.add_task("Detecting application archetype...", total=None)
 
-        detector = ArchetypeDetector()
+        detector = ArchetypeDetector(include_ignored=include_ignored)
         archetype_result = detector.detect(path)
 
         progress.update(task, completed=True)
@@ -427,7 +443,7 @@ def run_interactive(
 
     # Phase 3: Run analysis
     config_data = load_config(config_path)
-    results = _run_analysis(path, config_data)
+    results = _run_analysis(path, config_data, include_ignored)
 
     # Write results
     write_results(results, output_path)
@@ -472,7 +488,7 @@ def _display_archetype_results(result) -> None:
             console.print(f"  • {source}")
 
 
-def _run_analysis(path: Path, config: dict) -> AnalysisResults:
+def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> AnalysisResults:
     """Run the full dead code analysis."""
     start_time = time.time()
 
@@ -488,7 +504,7 @@ def _run_analysis(path: Path, config: dict) -> AnalysisResults:
     ignore_decorators = get_ignore_decorators(config)
 
     # Find all Python files
-    py_files = _find_python_files(path, includes, excludes)
+    py_files = _find_python_files(path, includes, excludes, include_ignored)
 
     console.print(f"[dim]Found {len(py_files)} Python files to analyze[/]\n")
 
@@ -730,33 +746,28 @@ def _find_python_files(
     path: Path,
     includes: list[str],
     excludes: list[str],
+    include_ignored: bool = False,
 ) -> list[Path]:
     """Find Python files matching include/exclude patterns."""
+    from openprune.exclusion import FileExcluder
+
+    # Use FileExcluder for gitignore/pyproject.toml patterns
+    excluder = FileExcluder(path, include_ignored=include_ignored, extra_excludes=excludes)
+
     py_files: list[Path] = []
 
     for py_file in path.rglob("*.py"):
-        # Get relative path for pattern matching
+        # Use FileExcluder for all exclusion logic
+        if excluder.should_exclude(py_file):
+            continue
+
+        # Get relative path for include pattern matching
         try:
             rel_path = py_file.relative_to(path)
         except ValueError:
             continue
 
         rel_str = str(rel_path)
-
-        # Check excludes first
-        excluded = False
-        for pattern in excludes:
-            if fnmatch.fnmatch(rel_str, pattern):
-                excluded = True
-                break
-            # Also check directory components
-            for part in rel_path.parts:
-                if fnmatch.fnmatch(part, pattern.replace("**/", "").replace("/**", "")):
-                    excluded = True
-                    break
-
-        if excluded:
-            continue
 
         # Check includes
         included = False

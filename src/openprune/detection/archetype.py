@@ -12,6 +12,7 @@ except ImportError:
 from openprune.detection.entrypoints import detect_entrypoints
 from openprune.detection.infrastructure import InfrastructureDetector
 from openprune.detection.linting import LintingDetector
+from openprune.exclusion import FileExcluder
 from openprune.models.archetype import (
     ArchetypeResult,
     Entrypoint,
@@ -58,15 +59,19 @@ def _get_requirements_patterns() -> dict[str, FrameworkType]:
 class ArchetypeDetector:
     """Detect application frameworks and patterns."""
 
-    def __init__(self) -> None:
+    def __init__(self, include_ignored: bool = False) -> None:
+        self._include_ignored = include_ignored
         self.linting_detector = LintingDetector()
-        self.infra_detector = InfrastructureDetector()
+        self.infra_detector = InfrastructureDetector(include_ignored=include_ignored)
         # Get indicators from plugins
         self._import_indicators = _get_import_indicators()
         self._requirements_patterns = _get_requirements_patterns()
 
     def detect(self, project_path: Path) -> ArchetypeResult:
         """Main detection entry point."""
+        # Create excluder for this detection run
+        self._excluder = FileExcluder(project_path, include_ignored=self._include_ignored)
+
         frameworks = self._detect_frameworks(project_path)
         entrypoints = self._detect_entrypoints(project_path)
         linting = self.linting_detector.detect(project_path)
@@ -98,11 +103,8 @@ class ArchetypeDetector:
 
         # Scan Python files for imports
         for py_file in path.rglob("*.py"):
-            # Skip common non-source directories
-            if any(
-                part in py_file.parts
-                for part in ["__pycache__", ".venv", "venv", ".git", "node_modules"]
-            ):
+            # Use FileExcluder for exclusion logic
+            if self._excluder.should_exclude(py_file):
                 continue
             self._scan_imports(py_file, detections)
 
@@ -114,11 +116,8 @@ class ArchetypeDetector:
 
         # Detect from Python files using plugins
         for py_file in path.rglob("*.py"):
-            # Skip common non-source directories
-            if any(
-                part in py_file.parts
-                for part in ["__pycache__", ".venv", "venv", ".git", "node_modules"]
-            ):
+            # Use FileExcluder for exclusion logic
+            if self._excluder.should_exclude(py_file):
                 continue
 
             try:

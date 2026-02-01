@@ -14,12 +14,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import yaml
+import yaml
 
-    HAS_YAML = True
-except ImportError:
-    HAS_YAML = False
+from openprune.exclusion import FileExcluder
 
 
 @dataclass
@@ -51,11 +48,14 @@ PYTHON_PATTERNS = [
 class InfrastructureDetector:
     """Detect Python entrypoints from infrastructure files."""
 
-    def __init__(self) -> None:
+    def __init__(self, include_ignored: bool = False) -> None:
         self._flask_app_env: str | None = None
+        self._include_ignored = include_ignored
+        self._excluder: FileExcluder | None = None
 
     def detect(self, project_path: Path) -> list[InfraEntrypoint]:
         """Detect all infrastructure entrypoints in a project."""
+        self._excluder = FileExcluder(project_path, include_ignored=self._include_ignored)
         entrypoints: list[InfraEntrypoint] = []
         entrypoints.extend(self._scan_dockerfiles(project_path))
         entrypoints.extend(self._scan_docker_compose(project_path))
@@ -137,9 +137,6 @@ class InfrastructureDetector:
 
     def _scan_docker_compose(self, project_path: Path) -> list[InfraEntrypoint]:
         """Scan docker-compose*.yml for command and entrypoint."""
-        if not HAS_YAML:
-            return []
-
         entrypoints: list[InfraEntrypoint] = []
 
         for compose_file in project_path.glob("docker-compose*.yml"):
@@ -233,9 +230,6 @@ class InfrastructureDetector:
 
     def _scan_gitlab_ci(self, project_path: Path) -> list[InfraEntrypoint]:
         """Scan .gitlab-ci.yml for Python commands in script sections."""
-        if not HAS_YAML:
-            return []
-
         entrypoints: list[InfraEntrypoint] = []
         ci_file = project_path / ".gitlab-ci.yml"
 
@@ -294,11 +288,8 @@ class InfrastructureDetector:
         entrypoints: list[InfraEntrypoint] = []
 
         for sh_file in project_path.rglob("*.sh"):
-            # Skip common non-source directories
-            if any(
-                part in sh_file.parts
-                for part in ["__pycache__", ".venv", "venv", ".git", "node_modules"]
-            ):
+            # Use FileExcluder for exclusion logic
+            if self._excluder.should_exclude(sh_file):
                 continue
 
             entrypoints.extend(
