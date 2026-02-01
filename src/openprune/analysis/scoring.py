@@ -257,6 +257,17 @@ def get_git_last_modified(file_path: Path, repo_root: Path | None = None) -> dat
     """Get the last git commit date for a file."""
     try:
         cwd = repo_root or file_path.parent
+
+        # Security: validate file_path is within repo_root if provided
+        if repo_root is not None:
+            try:
+                resolved_path = file_path.resolve()
+                resolved_root = repo_root.resolve()
+                if not resolved_path.is_relative_to(resolved_root):
+                    return None
+            except (ValueError, OSError):
+                return None
+
         result = subprocess.run(
             ["git", "log", "-1", "--format=%cI", "--", str(file_path)],
             capture_output=True,

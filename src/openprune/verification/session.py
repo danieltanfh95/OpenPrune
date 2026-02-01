@@ -6,6 +6,27 @@ from pathlib import Path
 
 from openprune.verification.prompts import build_combined_prompt, build_system_prompt
 
+# Whitelist of allowed LLM CLI tools for security
+ALLOWED_LLM_TOOLS = {"claude", "opencode", "kimi"}
+
+
+def _validate_llm_tool(llm_tool: str) -> None:
+    """Validate the LLM tool name for security.
+
+    Args:
+        llm_tool: Name of the LLM CLI tool
+
+    Raises:
+        ValueError: If the tool is not in the whitelist or contains path separators
+    """
+    if "/" in llm_tool or "\\" in llm_tool:
+        raise ValueError("LLM tool name cannot contain path separators")
+    if llm_tool not in ALLOWED_LLM_TOOLS:
+        raise ValueError(
+            f"Unsupported LLM tool: '{llm_tool}'. "
+            f"Allowed tools: {', '.join(sorted(ALLOWED_LLM_TOOLS))}"
+        )
+
 
 def launch_llm_session(
     project_path: Path,
@@ -26,7 +47,11 @@ def launch_llm_session(
 
     Raises:
         RuntimeError: If the LLM CLI tool is not found in PATH
+        ValueError: If the LLM tool is not in the allowed whitelist
     """
+    # Validate LLM tool is allowed (security check)
+    _validate_llm_tool(llm_tool)
+
     # Validate LLM tool exists
     if not shutil.which(llm_tool):
         raise RuntimeError(

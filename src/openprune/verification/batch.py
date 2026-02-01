@@ -23,6 +23,46 @@ from openprune.verification.prompts import build_system_prompt
 
 console = Console()
 
+# Whitelist of allowed LLM CLI tools for security
+ALLOWED_LLM_TOOLS = {"claude", "opencode", "kimi"}
+
+
+def _validate_llm_tool(llm_tool: str) -> None:
+    """Validate the LLM tool name for security.
+
+    Args:
+        llm_tool: Name of the LLM CLI tool
+
+    Raises:
+        ValueError: If the tool is not in the whitelist or contains path separators
+    """
+    if "/" in llm_tool or "\\" in llm_tool:
+        raise ValueError("LLM tool name cannot contain path separators")
+    if llm_tool not in ALLOWED_LLM_TOOLS:
+        raise ValueError(
+            f"Unsupported LLM tool: '{llm_tool}'. "
+            f"Allowed tools: {', '.join(sorted(ALLOWED_LLM_TOOLS))}"
+        )
+
+
+def _safe_resolve(base_path: Path, user_path: str) -> Path | None:
+    """Safely resolve a path ensuring it stays within base directory.
+
+    Args:
+        base_path: The base directory that paths must stay within
+        user_path: User-provided path to resolve
+
+    Returns:
+        Resolved Path if safe, None if path escapes base directory
+    """
+    try:
+        full_path = (base_path / user_path).resolve()
+        if not full_path.is_relative_to(base_path.resolve()):
+            return None
+        return full_path
+    except (ValueError, OSError):
+        return None
+
 
 def run_batch_verification(
     project_path: Path,
@@ -45,6 +85,9 @@ def run_batch_verification(
     Returns:
         VerificationResults with all verified items
     """
+    # Validate LLM tool is allowed (security check)
+    _validate_llm_tool(llm_tool)
+
     # Validate LLM tool exists
     if not shutil.which(llm_tool):
         raise RuntimeError(
@@ -134,11 +177,13 @@ def _build_oneshot_prompt(
         by_file[item.get("file", "")].append(item)
 
     for file_path, items in by_file.items():
-        full_path = project_path / file_path
+        full_path = _safe_resolve(project_path, file_path)
         prompt_parts.append(f"### {file_path}\n\n")
 
-        # Include file contents
-        if full_path.exists():
+        # Include file contents (skip if path traversal detected)
+        if full_path is None:
+            prompt_parts.append("*(Skipped: path outside project directory)*\n\n")
+        elif full_path.exists():
             try:
                 content = full_path.read_text()
                 # Add line numbers for reference
