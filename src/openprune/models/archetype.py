@@ -33,6 +33,8 @@ class EntrypointType(Enum):
     TYPER_COMMAND = auto()
     MAIN_BLOCK = auto()
     FACTORY_FUNCTION = auto()
+    INFRA_ENTRYPOINT = auto()  # From Dockerfile/docker-compose/CI
+    SCRIPT_ENTRYPOINT = auto()  # Direct script execution (python script.py)
 
 
 @dataclass

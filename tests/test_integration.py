@@ -428,6 +428,52 @@ class TestFullPipelineWithFixture:
         assert len(high_confidence_items) > 0, "Should have unused items with high confidence"
 
 
+class TestInfrastructureIntegration:
+    """Tests for infrastructure file detection in the full pipeline."""
+
+    def test_detects_dockerfile_entrypoints(self):
+        """Should detect entrypoints from Dockerfile."""
+        detector = ArchetypeDetector()
+        result = detector.detect(FIXTURES_PATH)
+
+        # Should find FLASK_APP and gunicorn entrypoint
+        entrypoint_types = [ep.type.name for ep in result.entrypoints]
+        assert "INFRA_ENTRYPOINT" in entrypoint_types or any(
+            ep.name == "app.py" or "app" in ep.name
+            for ep in result.entrypoints
+            if ep.type.name in ("INFRA_ENTRYPOINT", "SCRIPT_ENTRYPOINT")
+        )
+
+    def test_detects_shell_script_entrypoints(self):
+        """Should detect entrypoints from shell scripts."""
+        detector = ArchetypeDetector()
+        result = detector.detect(FIXTURES_PATH)
+
+        # Should find celery command from run_worker.sh
+        infra_eps = [ep for ep in result.entrypoints
+                     if ep.type.name in ("INFRA_ENTRYPOINT", "SCRIPT_ENTRYPOINT")]
+
+        # Should have found the tasks.celery reference
+        assert any("tasks" in ep.name for ep in infra_eps)
+
+    def test_infra_entrypoints_in_config(self, tmp_path):
+        """Infrastructure entrypoints should appear in generated config."""
+        from openprune.output.json_writer import write_config
+
+        detector = ArchetypeDetector()
+        result = detector.detect(FIXTURES_PATH)
+
+        config_path = tmp_path / "config.json"
+        write_config(result, config_path)
+
+        config = load_config(config_path)
+
+        # Should have entrypoints from infrastructure files (types are lowercased in config)
+        entrypoint_types = [ep["type"] for ep in config["entrypoints"]]
+        has_infra = "infra_entrypoint" in entrypoint_types or "script_entrypoint" in entrypoint_types
+        assert has_infra, f"Config should include infrastructure entrypoints, got: {entrypoint_types}"
+
+
 class TestResultsModel:
     """Tests for results data models."""
 

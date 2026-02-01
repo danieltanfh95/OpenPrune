@@ -10,13 +10,14 @@ except ImportError:
     import tomli as tomllib  # type: ignore
 
 from openprune.detection.entrypoints import detect_entrypoints
+from openprune.detection.infrastructure import InfrastructureDetector
 from openprune.detection.linting import LintingDetector
 from openprune.models.archetype import (
     ArchetypeResult,
     Entrypoint,
+    EntrypointType,
     FrameworkDetection,
     FrameworkType,
-    LintingConfig,
 )
 from openprune.plugins import get_registry
 
@@ -59,6 +60,7 @@ class ArchetypeDetector:
 
     def __init__(self) -> None:
         self.linting_detector = LintingDetector()
+        self.infra_detector = InfrastructureDetector()
         # Get indicators from plugins
         self._import_indicators = _get_import_indicators()
         self._requirements_patterns = _get_requirements_patterns()
@@ -107,9 +109,10 @@ class ArchetypeDetector:
         return list(detections.values())
 
     def _detect_entrypoints(self, path: Path) -> list[Entrypoint]:
-        """Find all entrypoints in the project using plugins."""
+        """Find all entrypoints in the project using plugins and infrastructure files."""
         entrypoints: list[Entrypoint] = []
 
+        # Detect from Python files using plugins
         for py_file in path.rglob("*.py"):
             # Skip common non-source directories
             if any(
@@ -127,6 +130,25 @@ class ArchetypeDetector:
                 entrypoints.extend(file_entrypoints)
             except (SyntaxError, UnicodeDecodeError):
                 continue
+
+        # Detect from infrastructure files (Dockerfile, docker-compose, etc.)
+        infra_entrypoints = self.infra_detector.detect(path)
+        for ie in infra_entrypoints:
+            if ie.target_file and ie.target_file.exists():
+                # Determine entrypoint type based on command type
+                ep_type = (
+                    EntrypointType.SCRIPT_ENTRYPOINT
+                    if ie.target_module.endswith(".py")
+                    else EntrypointType.INFRA_ENTRYPOINT
+                )
+                entrypoints.append(
+                    Entrypoint(
+                        type=ep_type,
+                        name=ie.target_module,
+                        file=ie.target_file,
+                        line=1,  # Module-level entrypoint
+                    )
+                )
 
         return entrypoints
 

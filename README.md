@@ -98,6 +98,7 @@ Detects:
 - Celery (tasks, shared tasks)
 - Click CLI commands
 - Main blocks (`if __name__ == "__main__"`)
+- Infrastructure files (Dockerfile, docker-compose.yml, .gitlab-ci.yml, shell scripts)
 
 ### `openprune analyze`
 
@@ -254,6 +255,44 @@ api.add_resource(UserResource, "/users/<user_id>")
 ```
 
 HTTP methods (`get`, `post`, `put`, `delete`, `patch`, `head`, `options`) on `Resource` subclasses are automatically recognized as entrypoints and won't be flagged as dead code.
+
+### Infrastructure File Detection
+
+OpenPrune scans infrastructure configuration files to discover Python entrypoints that aren't visible through code analysis alone:
+
+| File Type | Patterns Detected |
+|-----------|-------------------|
+| `Dockerfile` | `ENTRYPOINT`, `CMD`, `ENV FLASK_APP` |
+| `docker-compose*.yml` | `command`, `entrypoint`, environment variables |
+| `.gitlab-ci.yml` | `script` sections with Python commands |
+| Shell scripts (`.sh`) | `python`, `gunicorn`, `celery`, `uvicorn` commands |
+| `Procfile` | Heroku process definitions |
+
+**Example patterns detected:**
+
+```dockerfile
+# Dockerfile
+ENTRYPOINT ["gunicorn", "-c", "config.py", "src.app:app"]
+CMD ["celery", "-A", "tasks.celery", "worker"]
+ENV FLASK_APP=src/app.py
+```
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    command: ["python", "-m", "flask", "run"]
+  worker:
+    entrypoint: src/run_worker.sh
+```
+
+```bash
+# run_scheduler.sh
+python -m celery -A src.tasks.celery beat
+python src/run_worker.py
+```
+
+Shell scripts referenced by `ENTRYPOINT` or `entrypoint` are automatically followed to extract the actual Python commands.
 
 ## License
 
