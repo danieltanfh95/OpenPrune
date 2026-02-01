@@ -45,7 +45,7 @@ All outputs go to `.openprune/` directory in the target project.
 
 1. **Detection** (`src/openprune/detection/`)
    - `ArchetypeDetector` scans for framework imports (Flask, Celery, FastAPI, etc.)
-   - `EntrypointVisitor` finds decorated functions (`@app.route`, `@celery.task`, etc.)
+   - `detect_entrypoints()` finds decorated functions via plugins (`@app.route`, `@celery.task`, etc.)
    - `LintingDetector` reads pyproject.toml/ruff.toml for noqa patterns
 
 2. **Analysis** (`src/openprune/analysis/`)
