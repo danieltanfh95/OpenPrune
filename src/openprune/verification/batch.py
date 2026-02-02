@@ -26,6 +26,13 @@ console = Console()
 # Whitelist of allowed LLM CLI tools for security
 ALLOWED_LLM_TOOLS = {"claude", "opencode", "kimi"}
 
+# Priority levels for LLM verification (lower = higher priority)
+PRIORITY_P0 = 0  # Medium confidence (50-79%) non-imports - highest LLM value
+PRIORITY_P1 = 1  # High confidence (80-99%) non-imports
+PRIORITY_P2 = 2  # High confidence (80-99%) imports - usually true positives
+PRIORITY_P3 = 3  # 100% confidence - auto-delete, no LLM needed
+PRIORITY_SKIP = 4  # Low confidence (<50) - likely used, skip
+
 
 def _validate_llm_tool(llm_tool: str) -> None:
     """Validate the LLM tool name for security.
@@ -62,6 +69,111 @@ def _safe_resolve(base_path: Path, user_path: str) -> Path | None:
         return full_path
     except (ValueError, OSError):
         return None
+
+
+def _assign_priority(item: dict) -> int:
+    """Assign verification priority (lower = higher priority).
+
+    Priority order:
+    - P0: Medium confidence (50-79%) non-imports - highest false positive risk
+    - P1: High confidence (80-99%) non-imports - medium risk
+    - P2: High confidence (80-99%) imports - usually true positives
+    - P3: 100% confidence - auto-delete, no LLM needed
+    - SKIP: Low confidence (<50) - likely used
+    """
+    conf = item.get("confidence", 0)
+    symbol_type = item.get("type", "")
+    # Type field values are like "unused_import", "unused_function", etc.
+    is_import = "import" in symbol_type
+
+    if conf == 100:
+        return PRIORITY_P3
+    elif 80 <= conf <= 99:
+        return PRIORITY_P2 if is_import else PRIORITY_P1
+    elif 50 <= conf <= 79:
+        return PRIORITY_P0
+    else:
+        return PRIORITY_SKIP
+
+
+def _sort_by_priority(items: list[dict]) -> list[dict]:
+    """Sort items by verification priority (highest priority first).
+
+    Returns items sorted with P0 first, then P1, P2, etc.
+    Within same priority, maintains original order.
+    """
+    return sorted(items, key=_assign_priority)
+
+
+def _get_priority_label(priority: int) -> str:
+    """Get human-readable priority label."""
+    labels = {
+        PRIORITY_P0: "P0 (Medium conf, highest LLM value)",
+        PRIORITY_P1: "P1 (High conf non-import)",
+        PRIORITY_P2: "P2 (High conf import)",
+        PRIORITY_P3: "P3 (100% conf, auto-delete)",
+        PRIORITY_SKIP: "SKIP (Low conf, likely used)",
+    }
+    return labels.get(priority, f"P{priority}")
+
+
+def _collapse_orphaned_files(
+    items: list[dict],
+    orphaned_file_paths: set[str],
+) -> tuple[list[dict], list[dict]]:
+    """Collapse orphaned file items to file-level entries.
+
+    Instead of listing each symbol from an orphaned file separately,
+    collapse them to single entries like:
+    "credentials_enc.py (entire file unreachable, 10 symbols)"
+
+    Args:
+        items: All dead code items
+        orphaned_file_paths: Set of file paths marked as orphaned
+
+    Returns:
+        tuple: (non_orphaned_items, collapsed_file_entries)
+    """
+    orphaned_by_file: dict[str, list[dict]] = {}
+    non_orphaned: list[dict] = []
+
+    for item in items:
+        item_file = item.get("file", "")
+        reasons = item.get("reasons", [])
+        is_orphaned = (
+            item_file in orphaned_file_paths
+            or any("Entire file is unreachable" in r for r in reasons)
+        )
+        if is_orphaned:
+            if item_file not in orphaned_by_file:
+                orphaned_by_file[item_file] = []
+            orphaned_by_file[item_file].append(item)
+        else:
+            non_orphaned.append(item)
+
+    # Create collapsed entries for each orphaned file
+    collapsed: list[dict] = []
+    for file_path, file_items in orphaned_by_file.items():
+        # Collect symbol types for summary
+        type_counts: dict[str, int] = {}
+        for item in file_items:
+            t = item.get("type", "unknown")
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+        type_summary = ", ".join(f"{count} {t}s" for t, count in sorted(type_counts.items()))
+
+        collapsed.append({
+            "file": file_path,
+            "type": "orphaned_file",
+            "confidence": 100,
+            "symbol_count": len(file_items),
+            "type_summary": type_summary,
+            "symbols": [i.get("qualified_name", "") for i in file_items],
+            "reasons": ["Entire file is unreachable from any entrypoint"],
+            "suggested_action": "DELETE",
+        })
+
+    return non_orphaned, collapsed
 
 
 def run_batch_verification(
@@ -114,44 +226,55 @@ def run_batch_verification(
     # Build set of orphaned file paths for quick lookup
     orphaned_file_paths = {of.get("file") for of in orphaned_files}
 
-    # Separate orphaned items from non-orphaned
-    orphaned_items = []
-    non_orphaned_items = []
-    for item in dead_code:
-        item_file = item.get("file", "")
-        reasons = item.get("reasons", [])
-        is_orphaned = (
-            item_file in orphaned_file_paths
-            or any("Entire file is unreachable" in r for r in reasons)
-        )
-        if is_orphaned:
-            orphaned_items.append(item)
-        else:
-            non_orphaned_items.append(item)
+    # Collapse orphaned files to file-level entries
+    non_orphaned_items, collapsed_orphan_files = _collapse_orphaned_files(
+        dead_code, orphaned_file_paths
+    )
+    orphaned_item_count = sum(f["symbol_count"] for f in collapsed_orphan_files)
 
     # Filter by confidence (only non-orphaned items go through this)
     if include_orphaned:
         # Include everything above threshold
         candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
         auto_verified_orphans: list[VerifiedItem] = []
+        collapsed_orphan_files = []  # Don't auto-verify, include in candidates
     else:
         # Skip orphaned items - auto-verify them as DELETE
         candidates = [d for d in non_orphaned_items if d.get("confidence", 0) >= min_confidence]
-        auto_verified_orphans = _auto_verify_orphans(orphaned_items)
+        auto_verified_orphans = _auto_verify_orphans_from_collapsed(collapsed_orphan_files)
+
+    # Sort candidates by priority (P0 first, then P1, P2)
+    candidates = _sort_by_priority(candidates)
+
+    # Count items by priority for display
+    priority_counts: dict[int, int] = {}
+    for item in candidates:
+        p = _assign_priority(item)
+        priority_counts[p] = priority_counts.get(p, 0) + 1
 
     skipped = [d for d in dead_code if d.get("confidence", 0) < min_confidence]
 
     console.print(Panel.fit("[bold blue]OpenPrune - Oneshot Verification[/]"))
     console.print(f"\n[dim]LLM:[/] {llm_tool}")
     console.print(f"[dim]Min confidence:[/] {min_confidence}%")
-    console.print(f"[green]{len(candidates)}[/] items to verify")
+    console.print(f"[green]{len(candidates)}[/] items to verify (sorted by priority)")
     console.print(f"[dim]{len(skipped)} items below threshold[/]")
-    if orphaned_files:
+
+    # Show priority breakdown
+    if priority_counts:
+        console.print("\n[bold]Priority breakdown:[/]")
+        for p in sorted(priority_counts.keys()):
+            label = _get_priority_label(p)
+            count = priority_counts[p]
+            color = "cyan" if p == PRIORITY_P0 else "blue" if p == PRIORITY_P1 else "dim"
+            console.print(f"  [{color}]{label}:[/] {count} items")
+
+    if collapsed_orphan_files:
         if include_orphaned:
-            console.print(f"[yellow]{len(orphaned_files)} orphaned files (included for verification)[/]")
+            console.print(f"\n[yellow]{len(collapsed_orphan_files)} orphaned files (included for verification)[/]")
         else:
-            console.print(f"[green]{len(orphaned_items)} orphaned items auto-marked as DELETE[/]")
-            console.print(f"[dim](use --include-orphaned to verify these with LLM)[/]")
+            console.print(f"\n[green]{len(collapsed_orphan_files)} orphaned files collapsed → {orphaned_item_count} items auto-marked DELETE[/]")
+            console.print("[dim](use --include-orphaned to verify these with LLM)[/]")
 
     if not candidates:
         if auto_verified_orphans:
@@ -244,16 +367,20 @@ def _build_oneshot_prompt(
         for item in items:
             confidence = item.get("confidence", 0)
             reasons = ", ".join(item.get("reasons", [])) or "No specific reason"
+            priority = _assign_priority(item)
 
-            # Add confidence level indicator
+            # Add confidence level indicator with priority
             if confidence == 0:
                 conf_label = "[ENTRYPOINT]"
             elif confidence < 50:
-                conf_label = "[LOW - needs verification]"
+                conf_label = "[LOW - likely used]"
             elif confidence < 80:
-                conf_label = "[MEDIUM]"
+                conf_label = f"[P{priority} MEDIUM - highest LLM value]"
+            elif confidence < 100:
+                is_import = "import" in item.get("type", "")
+                conf_label = f"[P{priority} HIGH {'import' if is_import else 'non-import'}]"
             else:
-                conf_label = "[HIGH]"
+                conf_label = "[P3 100% - auto-delete candidate]"
 
             prompt_parts.append(
                 f"- `{item.get('qualified_name', item.get('name', 'unknown'))}` "
@@ -475,6 +602,39 @@ def _auto_verify_orphans(orphaned_items: list[dict]) -> list[VerifiedItem]:
                 code_preview=item.get("code_preview"),
                 verdict=LLMVerdict.DELETE,
                 llm_reasoning="Auto-verified: Entire file is unreachable from any entrypoint",
+                verified_at=datetime.now(),
+            )
+        )
+    return verified
+
+
+def _auto_verify_orphans_from_collapsed(
+    collapsed_files: list[dict],
+) -> list[VerifiedItem]:
+    """Auto-verify orphaned files (collapsed) as DELETE without LLM verification.
+
+    Creates a single VerifiedItem per orphaned file instead of one per symbol.
+    The file-level entry shows the total symbol count.
+    """
+    verified: list[VerifiedItem] = []
+    for file_entry in collapsed_files:
+        file_path = file_entry.get("file", "")
+        symbol_count = file_entry.get("symbol_count", 0)
+        type_summary = file_entry.get("type_summary", "")
+
+        verified.append(
+            VerifiedItem(
+                qualified_name=f"{file_path} (entire file)",
+                name=Path(file_path).name,
+                type="orphaned_file",
+                file=Path(file_path),
+                line=0,
+                end_line=None,
+                original_confidence=100,
+                reasons=["Entire file is unreachable from any entrypoint"],
+                code_preview=f"{symbol_count} symbols: {type_summary}" if type_summary else f"{symbol_count} symbols",
+                verdict=LLMVerdict.DELETE,
+                llm_reasoning=f"Auto-verified: Entire file unreachable ({symbol_count} symbols: {type_summary})",
                 verified_at=datetime.now(),
             )
         )

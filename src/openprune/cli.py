@@ -327,24 +327,60 @@ def verify(
 def _show_verify_dry_run(path: Path, min_confidence: int) -> None:
     """Show dry-run preview for verification."""
     from openprune.output.json_writer import load_results
+    from openprune.verification.batch import (
+        PRIORITY_P0,
+        PRIORITY_P1,
+        PRIORITY_P2,
+        _assign_priority,
+        _collapse_orphaned_files,
+        _get_priority_label,
+        _sort_by_priority,
+    )
     from openprune.verification.prompts import build_system_prompt
 
     results_path = get_results_path(path)
     data = load_results(results_path)
     dead_code = data.get("dead_code", [])
+    orphaned_files = data.get("orphaned_files", [])
+    orphaned_file_paths = {of.get("file") for of in orphaned_files}
 
-    candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
+    # Collapse orphaned files
+    non_orphaned, collapsed_orphans = _collapse_orphaned_files(dead_code, orphaned_file_paths)
+    orphan_symbol_count = sum(f["symbol_count"] for f in collapsed_orphans)
+
+    # Filter by confidence
+    candidates = [d for d in non_orphaned if d.get("confidence", 0) >= min_confidence]
+    candidates = _sort_by_priority(candidates)
+
+    # Count by priority
+    priority_counts: dict[int, int] = {}
+    for item in candidates:
+        p = _assign_priority(item)
+        priority_counts[p] = priority_counts.get(p, 0) + 1
 
     console.print(Panel.fit("[bold cyan]Dry Run Preview[/]"))
-    console.print(f"\n[dim]Items to verify:[/] {len(candidates)}")
-    console.print(f"[dim]Skipped (below threshold):[/] {len(dead_code) - len(candidates)}\n")
+    console.print(f"\n[dim]Items to verify via LLM:[/] {len(candidates)}")
+    console.print(f"[dim]Skipped (below threshold):[/] {len(dead_code) - len(candidates) - orphan_symbol_count}")
+    if collapsed_orphans:
+        console.print(f"[green]Orphaned files collapsed:[/] {len(collapsed_orphans)} files → {orphan_symbol_count} items auto-DELETE\n")
+
+    # Show priority breakdown
+    if priority_counts:
+        console.print("[bold]Priority breakdown:[/]")
+        for p in sorted(priority_counts.keys()):
+            label = _get_priority_label(p)
+            count = priority_counts[p]
+            color = "cyan" if p == PRIORITY_P0 else "blue" if p == PRIORITY_P1 else "yellow" if p == PRIORITY_P2 else "dim"
+            console.print(f"  [{color}]{label}:[/] {count} items")
+        console.print()
 
     if candidates:
-        console.print("[bold]Top 5 candidates:[/]")
+        console.print("[bold]Top 5 candidates (sorted by priority):[/]")
         for item in candidates[:5]:
+            p = _assign_priority(item)
             console.print(
                 f"  • [cyan]{item.get('name')}[/] "
-                f"({item.get('type')}, {item.get('confidence')}%)"
+                f"({item.get('type')}, {item.get('confidence')}%, P{p})"
             )
 
     console.print("\n[bold]System prompt preview:[/]")

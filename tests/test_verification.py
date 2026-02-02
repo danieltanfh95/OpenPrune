@@ -193,20 +193,22 @@ class TestBuildOneshotPrompt:
         assert "   1 |" in result or "1 |" in result
 
     def test_confidence_labels(self, tmp_path: Path):
-        """Should add confidence level labels."""
+        """Should add confidence level labels with priority."""
         candidates = [
             {"qualified_name": "a", "file": "a.py", "line": 1, "confidence": 0, "type": "f", "reasons": []},
             {"qualified_name": "b", "file": "b.py", "line": 1, "confidence": 30, "type": "f", "reasons": []},
             {"qualified_name": "c", "file": "c.py", "line": 1, "confidence": 60, "type": "f", "reasons": []},
-            {"qualified_name": "d", "file": "d.py", "line": 1, "confidence": 90, "type": "f", "reasons": []},
+            {"qualified_name": "d", "file": "d.py", "line": 1, "confidence": 90, "type": "function", "reasons": []},
+            {"qualified_name": "e", "file": "e.py", "line": 1, "confidence": 90, "type": "import", "reasons": []},
         ]
 
         result = _build_oneshot_prompt(tmp_path, candidates, [], 0)
 
         assert "[ENTRYPOINT]" in result
-        assert "[LOW" in result
-        assert "[MEDIUM]" in result
-        assert "[HIGH]" in result
+        assert "[LOW - likely used]" in result
+        assert "MEDIUM" in result  # P0 MEDIUM for 60% confidence
+        assert "HIGH non-import]" in result  # P1 HIGH for 90% function
+        assert "HIGH import]" in result  # P2 HIGH for 90% import
 
     def test_includes_task_instructions(self, tmp_path: Path):
         """Should include task instructions at the end."""
