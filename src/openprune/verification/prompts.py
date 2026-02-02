@@ -68,6 +68,22 @@ Help the user review dead code items and determine:
   - `jq '.dead_code[] | select(.file == "app/utils.py")' .openprune/results.json` - items in specific file
   - `jq '.dead_code | length' .openprune/results.json` - count total items
 
+## Using Agents for Parallel Verification
+
+Use this workflow to efficiently verify all items:
+
+1. **Understand**: Read results.json and config.json to understand what needs verification
+2. **Practice**: Verify 3-5 items manually to learn the verification workflow
+3. **Parallelize**: Launch agents to verify remaining items in parallel
+   - Group items by file or by confidence tier
+   - Each agent verifies a subset independently
+   - Agents append their verdicts to verified.json
+
+Example agent strategy:
+- Agent 1: Verify all items in `app/routes.py`
+- Agent 2: Verify all items in `app/models.py`
+- Agent 3: Verify all remaining P0 (medium confidence) items
+
 ## results.json Schema
 
 The input file `.openprune/results.json` has this structure:
@@ -141,6 +157,15 @@ When writing to `.openprune/verified.json`, use this structure:
   ]
 }
 ```
+
+## Completion Requirement
+
+**IMPORTANT**: Work until ALL items are verified. Do not stop early or ask for permission to continue.
+
+- Process every item in results.json that matches the selected tiers
+- Only stop when verified.json contains a verdict for every applicable item
+- If you encounter errors, fix them and continue
+- Report progress periodically but do not wait for confirmation to proceed
 
 The user can ask you questions about specific items or request batch processing of all items.
 """
