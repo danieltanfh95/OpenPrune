@@ -395,6 +395,8 @@ class DeadCodeVisitor(ast.NodeVisitor):
         """Track attribute access."""
         if isinstance(node.ctx, ast.Load):
             self._record_usage(node, UsageContext.ATTRIBUTE)
+            # Check for Model.query pattern (Flask-SQLAlchemy)
+            self._check_model_query_pattern(node)
         # Also visit the value (e.g., for x.y.z, visit x.y)
         self.visit(node.value)
 
@@ -415,6 +417,13 @@ class DeadCodeVisitor(ast.NodeVisitor):
                             caller=self._get_current_caller(),
                         )
                     )
+
+        # Check for SQLAlchemy ORM patterns
+        self._check_sqlalchemy_patterns(node)
+
+        # Visit the function/attribute chain to properly traverse chained calls
+        # e.g., User.query.filter_by().all() needs to visit User.query
+        self.visit(node.func)
 
         # Visit arguments
         for arg in node.args:
@@ -486,6 +495,120 @@ class DeadCodeVisitor(ast.NodeVisitor):
                     parts.append(current.id)
                 return ".".join(reversed(parts))
         return ""
+
+    # === SQLAlchemy ORM Pattern Detection ===
+
+    def _check_model_query_pattern(self, node: ast.Attribute) -> None:
+        """Check for Model.query.* pattern and record the Model as ORM-used."""
+        # Looking for: ModelName.query or ModelName.query.filter(...)
+        # Node structure for Model.query: Attribute(value=Name(ModelName), attr='query')
+        if node.attr == "query" and isinstance(node.value, ast.Name):
+            # Direct Model.query access - record Model as ORM usage
+            self._record_orm_usage(node.value.id, node)
+
+    def _check_sqlalchemy_patterns(self, node: ast.Call) -> None:
+        """Check for SQLAlchemy ORM usage patterns in function calls."""
+        # Pattern 1: session.query(Model) or db.session.query(Model)
+        if self._is_session_query_call(node):
+            for arg in node.args:
+                if isinstance(arg, ast.Name):
+                    self._record_orm_usage(arg.id, node)
+
+        # Pattern 2: relationship("ModelName") or relationship(ModelName)
+        if self._is_relationship_call(node):
+            self._extract_relationship_target(node)
+
+        # Pattern 3: ForeignKey("tablename.field")
+        if self._is_foreignkey_call(node):
+            self._extract_foreignkey_target(node)
+
+        # Pattern 4: backref("name")
+        if self._is_backref_call(node):
+            self._extract_backref_target(node)
+
+    def _is_session_query_call(self, node: ast.Call) -> bool:
+        """Check if this is a session.query() call."""
+        match node.func:
+            case ast.Attribute(attr="query", value=value):
+                # session.query(...) or db.session.query(...)
+                if isinstance(value, ast.Name) and value.id in ("session", "Session"):
+                    return True
+                if isinstance(value, ast.Attribute) and value.attr == "session":
+                    return True
+        return False
+
+    def _is_relationship_call(self, node: ast.Call) -> bool:
+        """Check if this is a relationship() call."""
+        match node.func:
+            case ast.Name(id="relationship"):
+                return True
+            case ast.Attribute(attr="relationship"):
+                return True
+        return False
+
+    def _is_foreignkey_call(self, node: ast.Call) -> bool:
+        """Check if this is a ForeignKey() call."""
+        match node.func:
+            case ast.Name(id="ForeignKey"):
+                return True
+            case ast.Attribute(attr="ForeignKey"):
+                return True
+        return False
+
+    def _is_backref_call(self, node: ast.Call) -> bool:
+        """Check if this is a backref() call."""
+        match node.func:
+            case ast.Name(id="backref"):
+                return True
+            case ast.Attribute(attr="backref"):
+                return True
+        return False
+
+    def _extract_relationship_target(self, node: ast.Call) -> None:
+        """Extract model name from relationship() call."""
+        if node.args:
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                # relationship("ModelName")
+                self._record_orm_usage(arg.value, node)
+            elif isinstance(arg, ast.Name):
+                # relationship(ModelName)
+                self._record_orm_usage(arg.id, node)
+
+        # Also check for backref keyword argument: relationship("Model", backref="name")
+        for kw in node.keywords:
+            if kw.arg == "backref":
+                if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                    # backref="name"
+                    self._record_orm_usage(kw.value.value, node)
+
+    def _extract_foreignkey_target(self, node: ast.Call) -> None:
+        """Extract table name from ForeignKey() call."""
+        if node.args:
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                # ForeignKey("tablename.field") - extract tablename
+                table_ref = arg.value.split(".")[0]
+                self._record_orm_usage(table_ref, node)
+
+    def _extract_backref_target(self, node: ast.Call) -> None:
+        """Extract backref name."""
+        if node.args:
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                # backref("name") - record the backref name
+                self._record_orm_usage(arg.value, node)
+
+    def _record_orm_usage(self, name: str, node: ast.AST) -> None:
+        """Record an ORM usage."""
+        self.usages.append(
+            Usage(
+                symbol_name=name,
+                context=UsageContext.ORM_REFERENCE,
+                location=self._make_location(node),
+                caller=self._get_current_caller(),
+            )
+        )
 
 
 def analyze_file(file_path: Path, module_name: str | None = None) -> FileAnalysisResult:

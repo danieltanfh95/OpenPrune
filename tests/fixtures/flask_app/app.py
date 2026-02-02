@@ -2,6 +2,8 @@
 
 from flask import Flask, jsonify
 
+from .models import User, Post, Comment, db
+
 app = Flask(__name__)
 
 
@@ -20,8 +22,23 @@ def index():
 
 @app.route("/users/<int:user_id>", methods=["GET", "POST"])
 def get_user(user_id):
-    """Get a user by ID."""
-    return jsonify({"user_id": user_id})
+    """Get a user by ID - uses User.query (Flask-SQLAlchemy pattern)."""
+    user = User.query.get_or_404(user_id)
+    return jsonify({"user_id": user.id, "username": user.username})
+
+
+@app.route("/users/<int:user_id>/posts")
+def get_user_posts(user_id):
+    """Get posts for a user - uses session.query pattern."""
+    posts = db.session.query(Post).filter_by(user_id=user_id).all()
+    return jsonify([{"id": p.id, "title": p.title} for p in posts])
+
+
+@app.route("/posts/<int:post_id>/comments")
+def get_post_comments(post_id):
+    """Get comments for a post - uses Comment.query pattern."""
+    comments = Comment.query.filter_by(post_id=post_id).all()
+    return jsonify([{"id": c.id, "body": c.body} for c in comments])
 
 
 @app.route("/admin")

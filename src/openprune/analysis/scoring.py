@@ -143,6 +143,8 @@ class SuspicionScorer:
         node: DependencyNode,
         used_names: set[str],
         file_age_info: dict[Path, datetime] | None = None,
+        orm_usages: set[str] | None = None,
+        model_table_mapping: dict[str, str] | None = None,
     ) -> tuple[int, list[str]]:
         """
         Calculate suspicion score for a node.
@@ -152,6 +154,8 @@ class SuspicionScorer:
             node: The dependency node to score
             used_names: Set of names that are used somewhere
             file_age_info: Optional dict of file path -> last modified datetime
+            orm_usages: Set of model/table names referenced via SQLAlchemy ORM
+            model_table_mapping: Dict mapping model class names to table names
         """
         symbol = node.symbol
         reasons: list[str] = []
@@ -223,6 +227,20 @@ class SuspicionScorer:
                 confidence += age_adjustment
                 reasons.append(age_reason)
 
+        # SQLAlchemy Model scoring - check if model has ORM usages
+        if self._is_sqlalchemy_model(symbol):
+            has_orm_usage = self._check_model_orm_usages(
+                symbol, orm_usages, model_table_mapping
+            )
+            if not has_orm_usage:
+                # Model has no ORM usages - increase confidence it's dead
+                confidence += 30
+                reasons.append("SQLAlchemy Model with no ORM usages: +30")
+            else:
+                # Model is used via ORM - reduce confidence
+                confidence -= 20
+                reasons.append("SQLAlchemy Model with ORM usages: -20")
+
         # Clamp to valid range
         confidence = max(0, min(100, confidence))
 
@@ -251,6 +269,38 @@ class SuspicionScorer:
                 f"File not modified in {int(months)} months: +{self.config.stale_file_bonus}",
             )
         return 0, ""
+
+    def _is_sqlalchemy_model(self, symbol) -> bool:
+        """Check if symbol is a SQLAlchemy Model class."""
+        if symbol.type != SymbolType.CLASS:
+            return False
+        sqlalchemy_bases = {"Model", "db.Model", "Base", "DeclarativeBase", "AbstractConcreteBase"}
+        for parent in symbol.parent_classes:
+            if parent in sqlalchemy_bases:
+                return True
+        return False
+
+    def _check_model_orm_usages(
+        self,
+        symbol,
+        orm_usages: set[str] | None,
+        model_table_mapping: dict[str, str] | None,
+    ) -> bool:
+        """Check if a model has any ORM usages."""
+        if not orm_usages:
+            return False
+
+        # Check direct class name usage (e.g., session.query(User), User.query)
+        if symbol.name in orm_usages:
+            return True
+
+        # Check table name usage (for ForeignKey references like "users.id")
+        if model_table_mapping:
+            table_name = model_table_mapping.get(symbol.name)
+            if table_name and table_name in orm_usages:
+                return True
+
+        return False
 
     def calculate_unreachable_score(
         self,

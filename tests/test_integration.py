@@ -588,3 +588,113 @@ exclude = ["migrations"]
         assert "celery" not in normal_frameworks  # Ignored by gitignore
         assert "flask" in ignored_frameworks
         assert "celery" in ignored_frameworks  # Include-ignored bypasses gitignore
+
+
+class TestSQLAlchemyUsageDetection:
+    """Integration tests for SQLAlchemy model usage detection."""
+
+    def test_used_models_have_low_confidence(self, tmp_path):
+        """SQLAlchemy models that are queried should have low confidence."""
+        from openprune.detection.archetype import ArchetypeDetector
+        from openprune.output.json_writer import write_config
+        from openprune.config import load_config
+        from openprune.cli import _run_analysis
+
+        detector = ArchetypeDetector()
+        archetype_result = detector.detect(FIXTURES_PATH)
+
+        config_path = tmp_path / "config.json"
+        write_config(archetype_result, config_path)
+        config = load_config(config_path)
+
+        results = _run_analysis(FIXTURES_PATH, config)
+
+        # Models that ARE used via ORM queries
+        used_models = {"User", "Post", "Comment"}
+
+        for item in results.dead_code:
+            if item.name in used_models and item.type == "class":
+                # Used models should have low confidence (protected by ORM usage)
+                assert item.confidence <= 20, (
+                    f"{item.name} is used via ORM but has confidence {item.confidence}"
+                )
+
+    def test_unused_models_have_high_confidence(self, tmp_path):
+        """SQLAlchemy models that are never queried should have high confidence."""
+        from openprune.detection.archetype import ArchetypeDetector
+        from openprune.output.json_writer import write_config
+        from openprune.config import load_config
+        from openprune.cli import _run_analysis
+
+        detector = ArchetypeDetector()
+        archetype_result = detector.detect(FIXTURES_PATH)
+
+        config_path = tmp_path / "config.json"
+        write_config(archetype_result, config_path)
+        config = load_config(config_path)
+
+        results = _run_analysis(FIXTURES_PATH, config)
+
+        # Models that are NOT used anywhere
+        unused_models = {"UnusedModel", "AnotherUnusedModel", "DeprecatedUserProfile"}
+
+        for item in results.dead_code:
+            if item.name in unused_models and item.type == "class":
+                # Unused models should have higher confidence
+                assert item.confidence >= 40, (
+                    f"{item.name} is unused but has low confidence {item.confidence}"
+                )
+
+    def test_model_detected_via_relationship(self, tmp_path):
+        """Models referenced via relationship() should be detected as used."""
+        from openprune.detection.archetype import ArchetypeDetector
+        from openprune.output.json_writer import write_config
+        from openprune.config import load_config
+        from openprune.cli import _run_analysis
+
+        detector = ArchetypeDetector()
+        archetype_result = detector.detect(FIXTURES_PATH)
+
+        config_path = tmp_path / "config.json"
+        write_config(archetype_result, config_path)
+        config = load_config(config_path)
+
+        results = _run_analysis(FIXTURES_PATH, config)
+
+        # Post is referenced via relationship("Post", backref="author") in User model
+        post_items = [item for item in results.dead_code if item.name == "Post"]
+        assert len(post_items) > 0, "Post model should be in results"
+
+        for item in post_items:
+            if item.type == "class":
+                # Post is used via relationship, should have low confidence
+                assert item.confidence <= 20, (
+                    f"Post is referenced via relationship but has confidence {item.confidence}"
+                )
+
+    def test_model_detected_via_foreignkey(self, tmp_path):
+        """Models referenced via ForeignKey should be detected as used (via table name)."""
+        from openprune.detection.archetype import ArchetypeDetector
+        from openprune.output.json_writer import write_config
+        from openprune.config import load_config
+        from openprune.cli import _run_analysis
+
+        detector = ArchetypeDetector()
+        archetype_result = detector.detect(FIXTURES_PATH)
+
+        config_path = tmp_path / "config.json"
+        write_config(archetype_result, config_path)
+        config = load_config(config_path)
+
+        results = _run_analysis(FIXTURES_PATH, config)
+
+        # User's table "users" is referenced via ForeignKey("users.id") in Post
+        user_items = [item for item in results.dead_code if item.name == "User"]
+        assert len(user_items) > 0, "User model should be in results"
+
+        for item in user_items:
+            if item.type == "class":
+                # User is used via both query and ForeignKey, should have very low confidence
+                assert item.confidence <= 20, (
+                    f"User is heavily used but has confidence {item.confidence}"
+                )

@@ -547,3 +547,116 @@ class TestGetFileAgeInfo:
         result = get_file_age_info([Path("/nonexistent/file.py")], prefer_git=False)
 
         assert result == {}
+
+
+class TestSQLAlchemyModelScoring:
+    """Tests for SQLAlchemy model scoring based on ORM usages.
+
+    Note: SQLAlchemy model classes also get the 'implicit name' penalty (-40)
+    from the SQLAlchemy plugin, which is added to the ORM scoring adjustments.
+    """
+
+    def test_model_with_no_orm_usages_gets_penalty(self):
+        """SQLAlchemy model with no ORM usages should get +30 confidence."""
+        scorer = SuspicionScorer()
+        symbol = Symbol(
+            name="UnusedModel",
+            qualified_name="models.UnusedModel",
+            type=SymbolType.CLASS,
+            location=Location(file=Path("models.py"), line=1, column=0),
+            scope="module",
+            parent_classes=["db.Model"],  # SQLAlchemy model
+        )
+        node = make_node(symbol)
+
+        # No ORM usages
+        confidence, reasons = scorer.score(
+            node, set(), None, orm_usages=set(), model_table_mapping={}
+        )
+
+        # 60 (base) - 40 (implicit name from plugin) + 30 (no ORM usages) = 50
+        assert confidence == 50
+        assert any("no ORM usages" in r for r in reasons)
+
+    def test_model_with_orm_usages_gets_reduction(self):
+        """SQLAlchemy model with ORM usages should get -20 confidence."""
+        scorer = SuspicionScorer()
+        symbol = Symbol(
+            name="User",
+            qualified_name="models.User",
+            type=SymbolType.CLASS,
+            location=Location(file=Path("models.py"), line=1, column=0),
+            scope="module",
+            parent_classes=["Model"],  # SQLAlchemy model
+        )
+        node = make_node(symbol)
+
+        # User is used via ORM
+        confidence, reasons = scorer.score(
+            node, set(), None, orm_usages={"User"}, model_table_mapping={}
+        )
+
+        # 60 (base) - 40 (implicit name from plugin) - 20 (has ORM usages) = 0
+        assert confidence == 0
+        assert any("ORM usages" in r for r in reasons)
+
+    def test_model_matched_by_table_name(self):
+        """SQLAlchemy model should be matched by table name in ForeignKey."""
+        scorer = SuspicionScorer()
+        symbol = Symbol(
+            name="User",
+            qualified_name="models.User",
+            type=SymbolType.CLASS,
+            location=Location(file=Path("models.py"), line=1, column=0),
+            scope="module",
+            parent_classes=["Base"],  # SQLAlchemy model
+        )
+        node = make_node(symbol)
+
+        # Table "users" is referenced via ForeignKey
+        confidence, reasons = scorer.score(
+            node,
+            set(),
+            None,
+            orm_usages={"users"},  # Table name, not class name
+            model_table_mapping={"User": "users"},  # Maps class to table
+        )
+
+        # 60 (base) - 40 (implicit name from plugin) - 20 (has ORM usages) = 0
+        assert confidence == 0
+        assert any("ORM usages" in r for r in reasons)
+
+    def test_non_model_class_not_affected(self):
+        """Non-SQLAlchemy classes should not get ORM scoring."""
+        scorer = SuspicionScorer()
+        symbol = Symbol(
+            name="RegularClass",
+            qualified_name="module.RegularClass",
+            type=SymbolType.CLASS,
+            location=Location(file=Path("module.py"), line=1, column=0),
+            scope="module",
+            parent_classes=["object"],  # Not a SQLAlchemy model
+        )
+        node = make_node(symbol)
+
+        confidence, reasons = scorer.score(
+            node, set(), None, orm_usages=set(), model_table_mapping={}
+        )
+
+        # Should just be base confidence, no ORM adjustment
+        assert confidence == 60
+        assert not any("ORM" in r for r in reasons)
+
+    def test_function_not_affected_by_orm_scoring(self):
+        """Functions should not get ORM scoring even if named like a model."""
+        scorer = SuspicionScorer()
+        symbol = make_symbol("User", SymbolType.FUNCTION)
+        node = make_node(symbol)
+
+        confidence, reasons = scorer.score(
+            node, set(), None, orm_usages=set(), model_table_mapping={}
+        )
+
+        # Should just be base confidence
+        assert confidence == 60
+        assert not any("ORM" in r for r in reasons)

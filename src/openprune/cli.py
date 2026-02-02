@@ -34,7 +34,7 @@ from openprune.config import (
 )
 from openprune.detection.archetype import ArchetypeDetector
 from openprune.analysis.visitor import FileAnalysisResult
-from openprune.models.dependency import DependencyNode, Symbol, SymbolType, Usage
+from openprune.models.dependency import DependencyNode, Symbol, SymbolType, Usage, UsageContext
 from openprune.models.results import (
     AnalysisMetadata,
     AnalysisResults,
@@ -566,6 +566,7 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     all_definitions: dict[str, Symbol] = {}
     all_usages: set[str] = set()
     all_usages_list: list[Usage] = []  # For call graph
+    orm_usages: set[str] = set()  # SQLAlchemy ORM-specific usages
     file_results: dict[Path, FileAnalysisResult] = {}
     noqa_skipped: list[NoqaSkipped] = []
 
@@ -614,6 +615,9 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
             for usage in result.usages:
                 all_usages.add(usage.symbol_name)
                 all_usages_list.append(usage)
+                # Track ORM-specific usages for SQLAlchemy model scoring
+                if usage.context == UsageContext.ORM_REFERENCE:
+                    orm_usages.add(usage.symbol_name)
 
             progress.update(parse_task, advance=1)
 
@@ -638,6 +642,16 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     if detected_entrypoints:
         console.print(f"[dim]Marking {len(detected_entrypoints)} detected entrypoints...[/]")
         _mark_detected_entrypoints(all_definitions, detected_entrypoints, path)
+
+    # Build model-to-table mapping from detected SQLAlchemy models
+    model_table_mapping: dict[str, str] = {}
+    for ep in detected_entrypoints:
+        args = ep.get("arguments") or {}
+        if args.get("reason") == "SQLAlchemy Model":
+            model_name = ep.get("name")
+            table_name = args.get("table_name")
+            if model_name and table_name:
+                model_table_mapping[model_name] = table_name
 
     # Map entrypoint types to decorator patterns (fallback for decorator-based matching)
     entrypoint_decorator_patterns = {
@@ -720,7 +734,9 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
         node = DependencyNode(symbol=symbol)
 
         # Score the node
-        confidence, reasons = scorer.score(node, all_usages, file_age_info)
+        confidence, reasons = scorer.score(
+            node, all_usages, file_age_info, orm_usages, model_table_mapping
+        )
 
         # Check module-level reachability (using full module path)
         module_name = resolver._path_to_module(symbol.location.file)

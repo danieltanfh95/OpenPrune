@@ -28,6 +28,7 @@ class UsageContext(Enum):
     INHERITANCE = auto()
     DECORATOR = auto()
     TYPE_HINT = auto()
+    ORM_REFERENCE = auto()  # SQLAlchemy ORM reference (relationship, ForeignKey, query)
 
 
 @dataclass

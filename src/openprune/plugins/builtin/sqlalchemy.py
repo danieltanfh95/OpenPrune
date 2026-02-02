@@ -155,18 +155,37 @@ class _SQLAlchemyVisitor(ast.NodeVisitor):
         for base in node.bases:
             base_name = self._get_base_name(base)
             if base_name in SQLALCHEMY_BASES:
+                # Extract __tablename__ if present
+                table_name = self._extract_tablename(node)
+                if not table_name:
+                    # Default: lowercase class name (SQLAlchemy convention)
+                    table_name = node.name.lower()
+
                 self.entrypoints.append(
                     DetectedEntrypoint(
                         name=node.name,
                         type=EntrypointType.INFRA_ENTRYPOINT,
                         line=node.lineno,
                         file=self.file_path,
-                        arguments={"reason": "SQLAlchemy Model"},
+                        arguments={
+                            "reason": "SQLAlchemy Model",
+                            "table_name": table_name,
+                        },
                     )
                 )
                 break
 
         self.generic_visit(node)
+
+    def _extract_tablename(self, class_node: ast.ClassDef) -> str | None:
+        """Extract __tablename__ from class body."""
+        for item in class_node.body:
+            if isinstance(item, ast.Assign):
+                for target in item.targets:
+                    if isinstance(target, ast.Name) and target.id == "__tablename__":
+                        if isinstance(item.value, ast.Constant):
+                            return str(item.value.value)
+        return None
 
     def _get_base_name(self, node: ast.expr) -> str:
         """Get the name of a base class."""
