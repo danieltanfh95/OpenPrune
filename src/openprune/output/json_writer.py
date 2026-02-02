@@ -26,8 +26,10 @@ def write_config(result: ArchetypeResult, output_path: Path) -> None:
             }
             for fw in result.frameworks
         ],
-        "entrypoints": _build_entrypoint_config(result),
-        "detected_entrypoints": _build_detected_entrypoints(result),
+        "entry_points": {
+            "rules": _build_entrypoint_rules(result),
+            "detected": _build_detected_entrypoints(result),
+        },
         "analysis": {
             "include": ["**/*.py"],
             "exclude": [
@@ -73,8 +75,8 @@ def _build_linting_section(result: ArchetypeResult) -> dict:
     }
 
 
-def _build_entrypoint_config(result: ArchetypeResult) -> list[dict]:
-    """Build entrypoint configuration from detected entrypoints."""
+def _build_entrypoint_rules(result: ArchetypeResult) -> list[dict]:
+    """Build entrypoint rules/patterns from detected entrypoints."""
     # Group entrypoints by type
     type_patterns: dict[str, dict] = {}
 

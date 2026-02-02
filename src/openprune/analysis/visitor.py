@@ -169,13 +169,13 @@ class DeadCodeVisitor(ast.NodeVisitor):
         if node.args.kwarg:
             self.local_names.add(node.args.kwarg.arg)
 
-        # Visit type annotations
+        # Visit type annotations (recursively to capture nested types like Optional[X])
         for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:
             if arg.annotation:
-                self._record_usage(arg.annotation, UsageContext.TYPE_HINT)
+                self._visit_type_annotation(arg.annotation)
 
         if node.returns:
-            self._record_usage(node.returns, UsageContext.TYPE_HINT)
+            self._visit_type_annotation(node.returns)
 
         # Visit body
         for stmt in node.body:
@@ -237,8 +237,9 @@ class DeadCodeVisitor(ast.NodeVisitor):
             self._record_assignment(node.target)
         if node.value:
             self.visit(node.value)
-        # Type annotation is also a usage
-        self._record_usage(node.annotation, UsageContext.TYPE_HINT)
+        # Visit the annotation to capture all nested types (e.g., Optional[SomeClass])
+        if node.annotation:
+            self._visit_type_annotation(node.annotation)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         """Track augmented assignments (+=, -=, etc.)."""
@@ -467,6 +468,42 @@ class DeadCodeVisitor(ast.NodeVisitor):
                     self.visit(kw.value)
             case ast.Attribute() | ast.Name():
                 self._record_usage(decorator, UsageContext.DECORATOR)
+
+    def _visit_type_annotation(self, node: ast.expr) -> None:
+        """
+        Recursively visit type annotation to record all type references.
+
+        Handles nested types like Optional[SomeClass], List[Dict[str, MyModel]], etc.
+        This is critical for Pydantic models where field types reference other models.
+        """
+        match node:
+            case ast.Name():
+                # Simple type: SomeClass
+                self._record_usage(node, UsageContext.TYPE_HINT)
+            case ast.Attribute():
+                # Qualified type: module.SomeClass
+                self._record_usage(node, UsageContext.TYPE_HINT)
+            case ast.Subscript(value=value, slice=slice_):
+                # Generic type: Optional[X], List[Y], Dict[K, V]
+                self._visit_type_annotation(value)
+                # Handle the slice (type arguments)
+                if isinstance(slice_, ast.Tuple):
+                    # Multiple type args: Dict[str, int]
+                    for elt in slice_.elts:
+                        self._visit_type_annotation(elt)
+                else:
+                    # Single type arg: Optional[SomeClass]
+                    self._visit_type_annotation(slice_)
+            case ast.BinOp(left=left, right=right):
+                # Union types with | syntax: int | str
+                self._visit_type_annotation(left)
+                self._visit_type_annotation(right)
+            case ast.Constant():
+                # String annotations like "ForwardRef" - skip, they're just strings
+                pass
+            case _:
+                # Other nodes (None, Ellipsis, etc.) - skip
+                pass
 
     def _extract_name(self, node: ast.expr) -> str | None:
         """Extract the name from various AST nodes."""

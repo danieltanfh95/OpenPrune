@@ -268,6 +268,11 @@ def verify(
         "-n",
         help="Show what would be sent to LLM without executing",
     ),
+    include_orphaned: bool = typer.Option(
+        False,
+        "--include-orphaned",
+        help="Include orphaned files in LLM verification (normally auto-marked as DELETE)",
+    ),
 ) -> None:
     """Verify dead code candidates using an LLM.
 
@@ -276,6 +281,10 @@ def verify(
     and write verdicts to verified.json.
 
     Use --batch for non-interactive processing of each item.
+
+    Items from orphaned files (100% confidence, entire file unreachable) are
+    automatically marked as DELETE without LLM verification by default. Use
+    --include-orphaned to verify them with the LLM instead.
     """
     path = path.resolve()
     results_path = get_results_path(path)
@@ -294,7 +303,7 @@ def verify(
         from openprune.verification.batch import run_batch_verification
 
         try:
-            run_batch_verification(path, llm, min_confidence)
+            run_batch_verification(path, llm, min_confidence, include_orphaned=include_orphaned)
         except RuntimeError as e:
             console.print(f"[red]Error:[/] {e}")
             raise typer.Exit(1)
@@ -507,10 +516,11 @@ def run_pipeline(
             console.print(f"[red]Verification error:[/] {e}")
     else:
         # Non-interactive mode: batch verification
+        # By default, skip orphaned files (auto-mark as DELETE)
         from openprune.verification.batch import run_batch_verification
 
         try:
-            run_batch_verification(path, llm, min_confidence)
+            run_batch_verification(path, llm, min_confidence, include_orphaned=False)
         except RuntimeError as e:
             console.print(f"[red]Verification error:[/] {e}")
 
@@ -638,8 +648,9 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     console.print("[dim]Building call graph and analyzing reachability...[/]")
     call_graph = _build_call_graph(all_definitions, all_usages_list)
 
-    # First, mark symbols based on detected_entrypoints from config (from plugin detection)
-    detected_entrypoints = config.get("detected_entrypoints", [])
+    # First, mark symbols based on entry_points.detected from config (from plugin detection)
+    entry_points = config.get("entry_points", {})
+    detected_entrypoints = entry_points.get("detected", [])
     if detected_entrypoints:
         console.print(f"[dim]Marking {len(detected_entrypoints)} detected entrypoints...[/]")
         _mark_detected_entrypoints(all_definitions, detected_entrypoints, path)

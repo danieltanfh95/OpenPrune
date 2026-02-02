@@ -65,7 +65,7 @@ class TestConfigGeneration:
 
         assert "project" in config
         assert "frameworks" in config
-        assert "entrypoints" in config
+        assert "entry_points" in config
         assert "analysis" in config
         assert "linting" in config
 
@@ -470,7 +470,7 @@ class TestInfrastructureIntegration:
         config = load_config(config_path)
 
         # Should have entrypoints from infrastructure files (types are lowercased in config)
-        entrypoint_types = [ep["type"] for ep in config["entrypoints"]]
+        entrypoint_types = [ep["type"] for ep in config["entry_points"]["rules"]]
         has_infra = "infra_entrypoint" in entrypoint_types or "script_entrypoint" in entrypoint_types
         assert has_infra, f"Config should include infrastructure entrypoints, got: {entrypoint_types}"
 

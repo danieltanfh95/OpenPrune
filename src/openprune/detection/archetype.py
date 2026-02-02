@@ -113,6 +113,12 @@ class ArchetypeDetector:
         """Find all entrypoints in the project using plugins and infrastructure files."""
         entrypoints: list[Entrypoint] = []
 
+        # Initialize plugins with project root for CI-aware detection
+        registry = get_registry()
+        for plugin in registry.all_plugins():
+            if hasattr(plugin, "set_project_root"):
+                plugin.set_project_root(path)
+
         # Detect from Python files using plugins
         for py_file in path.rglob("*.py"):
             # Use FileExcluder for exclusion logic

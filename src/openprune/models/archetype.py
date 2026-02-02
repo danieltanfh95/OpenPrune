@@ -28,6 +28,8 @@ class EntrypointType(Enum):
     FACTORY_FUNCTION = auto()
     INFRA_ENTRYPOINT = auto()  # From Dockerfile/docker-compose/CI
     SCRIPT_ENTRYPOINT = auto()  # Direct script execution (python script.py)
+    PYTEST_TEST = auto()  # test_* functions in CI-covered paths
+    PYTEST_FIXTURE = auto()  # @pytest.fixture decorated functions
 
 
 @dataclass

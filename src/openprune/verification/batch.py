@@ -69,6 +69,7 @@ def run_batch_verification(
     llm_tool: str = "claude",
     min_confidence: int = 70,
     timeout: int = 600,  # Longer timeout for full analysis
+    include_orphaned: bool = False,
 ) -> VerificationResults:
     """
     Run single-session oneshot verification of all dead code items.
@@ -76,11 +77,17 @@ def run_batch_verification(
     This sends a single comprehensive prompt to the LLM with all items
     and file contents, then parses the complete response.
 
+    By default, items from orphaned files (100% confidence, entire file
+    unreachable) are automatically marked as DELETE without LLM verification,
+    since they are almost certainly dead code.
+
     Args:
         project_path: Path to the project root
         llm_tool: Name of the LLM CLI tool to use
         min_confidence: Minimum confidence threshold for verification
         timeout: Timeout in seconds for the LLM call
+        include_orphaned: If True, include orphaned file items for LLM verification.
+                         If False (default), auto-mark them as DELETE.
 
     Returns:
         VerificationResults with all verified items
@@ -104,8 +111,34 @@ def run_batch_verification(
     dead_code = results_data.get("dead_code", [])
     orphaned_files = results_data.get("orphaned_files", [])
 
-    # Filter by confidence
-    candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
+    # Build set of orphaned file paths for quick lookup
+    orphaned_file_paths = {of.get("file") for of in orphaned_files}
+
+    # Separate orphaned items from non-orphaned
+    orphaned_items = []
+    non_orphaned_items = []
+    for item in dead_code:
+        item_file = item.get("file", "")
+        reasons = item.get("reasons", [])
+        is_orphaned = (
+            item_file in orphaned_file_paths
+            or any("Entire file is unreachable" in r for r in reasons)
+        )
+        if is_orphaned:
+            orphaned_items.append(item)
+        else:
+            non_orphaned_items.append(item)
+
+    # Filter by confidence (only non-orphaned items go through this)
+    if include_orphaned:
+        # Include everything above threshold
+        candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
+        auto_verified_orphans: list[VerifiedItem] = []
+    else:
+        # Skip orphaned items - auto-verify them as DELETE
+        candidates = [d for d in non_orphaned_items if d.get("confidence", 0) >= min_confidence]
+        auto_verified_orphans = _auto_verify_orphans(orphaned_items)
+
     skipped = [d for d in dead_code if d.get("confidence", 0) < min_confidence]
 
     console.print(Panel.fit("[bold blue]OpenPrune - Oneshot Verification[/]"))
@@ -114,9 +147,16 @@ def run_batch_verification(
     console.print(f"[green]{len(candidates)}[/] items to verify")
     console.print(f"[dim]{len(skipped)} items below threshold[/]")
     if orphaned_files:
-        console.print(f"[yellow]{len(orphaned_files)} orphaned files[/]")
+        if include_orphaned:
+            console.print(f"[yellow]{len(orphaned_files)} orphaned files (included for verification)[/]")
+        else:
+            console.print(f"[green]{len(orphaned_items)} orphaned items auto-marked as DELETE[/]")
+            console.print(f"[dim](use --include-orphaned to verify these with LLM)[/]")
 
     if not candidates:
+        if auto_verified_orphans:
+            console.print(f"\n[yellow]No items to verify via LLM. {len(auto_verified_orphans)} orphaned items auto-verified.[/]")
+            return _build_results(auto_verified_orphans, skipped, llm_tool, min_confidence)
         console.print("\n[yellow]No items to verify.[/]")
         return _build_empty_results(skipped, llm_tool, min_confidence)
 
@@ -135,8 +175,11 @@ def run_batch_verification(
     # Parse the complete response
     verified_items = _parse_oneshot_response(response, candidates)
 
+    # Merge auto-verified orphans with LLM-verified items
+    all_verified_items = auto_verified_orphans + verified_items
+
     # Build and save results
-    results = _build_results(verified_items, skipped, llm_tool, min_confidence)
+    results = _build_results(all_verified_items, skipped, llm_tool, min_confidence)
 
     output_path = get_verified_path(project_path)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -409,6 +452,33 @@ def _parse_item_from_text(
 
     # Default to uncertain
     return LLMVerdict.UNCERTAIN, "Could not determine verdict from response"
+
+
+def _auto_verify_orphans(orphaned_items: list[dict]) -> list[VerifiedItem]:
+    """Auto-verify orphaned items as DELETE without LLM verification.
+
+    Items from orphaned files (100% confidence, entire file unreachable) are
+    almost certainly dead code, so we can skip LLM verification for them.
+    """
+    verified: list[VerifiedItem] = []
+    for item in orphaned_items:
+        verified.append(
+            VerifiedItem(
+                qualified_name=item.get("qualified_name", ""),
+                name=item.get("name", ""),
+                type=item.get("type", "unknown"),
+                file=Path(item.get("file", "")),
+                line=item.get("line", 0),
+                end_line=item.get("end_line"),
+                original_confidence=item.get("confidence", 100),
+                reasons=item.get("reasons", []),
+                code_preview=item.get("code_preview"),
+                verdict=LLMVerdict.DELETE,
+                llm_reasoning="Auto-verified: Entire file is unreachable from any entrypoint",
+                verified_at=datetime.now(),
+            )
+        )
+    return verified
 
 
 def _build_results(

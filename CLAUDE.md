@@ -23,6 +23,10 @@ poetry run openprune detect ./path/to/project     # Generate .openprune/config.j
 poetry run openprune analyze ./path/to/project    # Generate .openprune/results.json
 poetry run openprune verify ./path/to/project     # LLM verification (interactive)
 poetry run openprune verify ./path --batch        # LLM verification (oneshot)
+
+# Run on external project (cd to target, use its poetry environment)
+cd /path/to/target && poetry run openprune . detect
+cd /path/to/target && poetry run openprune . analyze
 ```
 
 ## Coding Conventions

@@ -71,9 +71,10 @@ def get_noqa_patterns(config: dict) -> list[str]:
 
 def get_entrypoint_types_to_mark(config: dict) -> set[str]:
     """Get entrypoint types that should be marked as used."""
-    entrypoints = config.get("entrypoints", [])
+    entry_points = config.get("entry_points", {})
+    rules = entry_points.get("rules", [])
     return {
         ep.get("type", "")
-        for ep in entrypoints
+        for ep in rules
         if ep.get("mark_as_used", True)
     }

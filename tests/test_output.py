@@ -75,7 +75,7 @@ class TestWriteConfig:
         assert "version" in data
         assert "project" in data
         assert "frameworks" in data
-        assert "entrypoints" in data
+        assert "entry_points" in data
         assert "analysis" in data
         assert "linting" in data
 
@@ -164,7 +164,7 @@ class TestWriteConfig:
         with open(output) as f:
             data = json.load(f)
 
-        ep_types = [ep["type"] for ep in data["entrypoints"]]
+        ep_types = [ep["type"] for ep in data["entry_points"]["rules"]]
         assert "main_block" in ep_types
         assert "factory_function" in ep_types
 
@@ -185,7 +185,7 @@ class TestWriteConfig:
         with open(output) as f:
             data = json.load(f)
 
-        ep_types = [ep["type"] for ep in data["entrypoints"]]
+        ep_types = [ep["type"] for ep in data["entry_points"]["rules"]]
         assert "flask_route" in ep_types
         assert "flask_cli" in ep_types
 
@@ -206,7 +206,7 @@ class TestWriteConfig:
         with open(output) as f:
             data = json.load(f)
 
-        ep_types = [ep["type"] for ep in data["entrypoints"]]
+        ep_types = [ep["type"] for ep in data["entry_points"]["rules"]]
         assert "celery_task" in ep_types
         assert "celery_shared_task" in ep_types
 
