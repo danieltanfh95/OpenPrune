@@ -60,6 +60,60 @@ Help the user review dead code items and determine:
 5. Make a verdict and explain your reasoning
 6. Update `.openprune/verified.json` with your verdicts
 
+## Tools Available
+
+- **jq**: Use `jq` to sample, filter, and query the JSON files efficiently
+  - `jq '.dead_code[:5]' .openprune/results.json` - first 5 items
+  - `jq '.dead_code | map(select(.confidence >= 80))' .openprune/results.json` - high confidence items
+  - `jq '.dead_code[] | select(.file == "app/utils.py")' .openprune/results.json` - items in specific file
+  - `jq '.dead_code | length' .openprune/results.json` - count total items
+
+## results.json Schema
+
+The input file `.openprune/results.json` has this structure:
+
+```json
+{
+  "version": "1.0",
+  "metadata": {
+    "project": "project-name",
+    "analyzed_at": "ISO timestamp",
+    "files_analyzed": 10,
+    "total_symbols": 150
+  },
+  "summary": {
+    "dead_code_items": 42,
+    "by_type": {"unused_function": 20, "unused_import": 15},
+    "by_confidence": {"high": 25, "medium": 10, "low": 7}
+  },
+  "entrypoints": [
+    {"qualified_name": "app.routes.index", "type": "flask_route", "file": "app/routes.py", "line": 10}
+  ],
+  "orphaned_files": [
+    {"file": "app/legacy.py", "module_name": "app.legacy", "symbols": 5, "lines": 80, "reason": "Not imported by any reachable module"}
+  ],
+  "dead_code": [
+    {
+      "qualified_name": "app.utils.old_helper",
+      "name": "old_helper",
+      "type": "unused_function",
+      "file": "app/utils.py",
+      "line": 45,
+      "end_line": 52,
+      "confidence": 95,
+      "reasons": ["No references found", "Not reachable from entrypoints"],
+      "suggested_action": "remove"
+    }
+  ]
+}
+```
+
+**Key fields in `dead_code` items:**
+- `qualified_name`: Full module path (e.g., "app.utils.old_helper")
+- `type`: "unused_function", "unused_import", "unused_class", "unused_variable"
+- `confidence`: 0-100 score (higher = more likely dead)
+- `reasons`: List of why this was flagged
+
 ## verified.json Format
 
 When writing to `.openprune/verified.json`, use this structure:
