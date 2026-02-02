@@ -8,11 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pathspec
-
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomli
 
 
 @dataclass
@@ -105,7 +101,7 @@ class FileExcluder:
 
         try:
             with open(pyproject_path, "rb") as f:
-                data = tomllib.load(f)
+                data = tomli.load(f)
         except Exception:
             return
 

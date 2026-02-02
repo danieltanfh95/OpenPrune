@@ -2,10 +2,10 @@
 
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
-from openprune.models.dependency import DependencyNode, Symbol, SymbolType
+from openprune.models.dependency import DependencyNode, SymbolType
 
 
 @dataclass

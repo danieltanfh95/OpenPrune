@@ -3,10 +3,7 @@
 import configparser
 from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomli
 
 from openprune.models.archetype import LintingConfig
 
@@ -45,7 +42,7 @@ class LintingDetector:
         """Extract linting config from pyproject.toml."""
         try:
             with open(path, "rb") as f:
-                data = tomllib.load(f)
+                data = tomli.load(f)
         except Exception:
             return
 
@@ -92,7 +89,7 @@ class LintingDetector:
         """Parse ruff.toml configuration."""
         try:
             with open(path, "rb") as f:
-                data = tomllib.load(f)
+                data = tomli.load(f)
         except Exception:
             return
 

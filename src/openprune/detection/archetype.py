@@ -4,10 +4,7 @@ import ast
 import sys
 from pathlib import Path
 
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib  # type: ignore
+import tomli
 
 from openprune.detection.entrypoints import detect_entrypoints
 from openprune.detection.infrastructure import InfrastructureDetector
@@ -18,23 +15,22 @@ from openprune.models.archetype import (
     Entrypoint,
     EntrypointType,
     FrameworkDetection,
-    FrameworkType,
 )
 from openprune.plugins import get_registry
 
 
-def _get_import_indicators() -> dict[str, FrameworkType]:
+def _get_import_indicators() -> dict[str, str]:
     """Get import indicators from plugins plus base patterns."""
     # Start with plugin-provided indicators
     indicators = get_registry().get_all_import_indicators()
 
     # Add base patterns for frameworks without plugins yet
     base_patterns = {
-        "fastapi": FrameworkType.FASTAPI,
-        "FastAPI": FrameworkType.FASTAPI,
-        "django": FrameworkType.DJANGO,
-        "click": FrameworkType.CLICK,
-        "typer": FrameworkType.TYPER,
+        "fastapi": "fastapi",
+        "FastAPI": "fastapi",
+        "django": "django",
+        "click": "click",
+        "typer": "typer",
     }
     for name, fw in base_patterns.items():
         if name not in indicators:
@@ -43,15 +39,16 @@ def _get_import_indicators() -> dict[str, FrameworkType]:
     return indicators
 
 
-def _get_requirements_patterns() -> dict[str, FrameworkType]:
+def _get_requirements_patterns() -> dict[str, str]:
     """Get requirements patterns from plugins plus base patterns."""
-    patterns: dict[str, FrameworkType] = {
-        "flask": FrameworkType.FLASK,
-        "flask-restplus": FrameworkType.FLASK,
-        "flask-restx": FrameworkType.FLASK,
-        "celery": FrameworkType.CELERY,
-        "fastapi": FrameworkType.FASTAPI,
-        "django": FrameworkType.DJANGO,
+    # Note: flask-restplus and flask-restx now have their own type via plugin
+    patterns: dict[str, str] = {
+        "flask": "flask",
+        "flask-restplus": "flask_restplus",
+        "flask-restx": "flask_restplus",
+        "celery": "celery",
+        "fastapi": "fastapi",
+        "django": "django",
     }
     return patterns
 
@@ -70,7 +67,9 @@ class ArchetypeDetector:
     def detect(self, project_path: Path) -> ArchetypeResult:
         """Main detection entry point."""
         # Create excluder for this detection run
-        self._excluder = FileExcluder(project_path, include_ignored=self._include_ignored)
+        self._excluder = FileExcluder(
+            project_path, include_ignored=self._include_ignored
+        )
 
         frameworks = self._detect_frameworks(project_path)
         entrypoints = self._detect_entrypoints(project_path)
@@ -90,7 +89,7 @@ class ArchetypeDetector:
 
     def _detect_frameworks(self, path: Path) -> list[FrameworkDetection]:
         """Scan imports and requirements for framework indicators."""
-        detections: dict[FrameworkType, FrameworkDetection] = {}
+        detections: dict[str, FrameworkDetection] = {}
 
         # Check pyproject.toml dependencies
         pyproject = path / "pyproject.toml"
@@ -158,7 +157,7 @@ class ArchetypeDetector:
         if pyproject.exists():
             try:
                 with open(pyproject, "rb") as f:
-                    data = tomllib.load(f)
+                    data = tomli.load(f)
                 requires = data.get("project", {}).get("requires-python", "")
                 if requires:
                     # Extract version from ">=3.11" or similar
@@ -173,21 +172,30 @@ class ArchetypeDetector:
         return f"{sys.version_info.major}.{sys.version_info.minor}"
 
     def _scan_pyproject(
-        self, path: Path, detections: dict[FrameworkType, FrameworkDetection]
+        self, path: Path, detections: dict[str, FrameworkDetection]
     ) -> None:
         """Extract framework indicators from pyproject.toml."""
         try:
             with open(path, "rb") as f:
-                data = tomllib.load(f)
+                data = tomli.load(f)
         except Exception:
             return
 
         # Check dependencies
         deps = data.get("project", {}).get("dependencies", [])
-        deps.extend(data.get("tool", {}).get("poetry", {}).get("dependencies", {}).keys())
+        deps.extend(
+            data.get("tool", {}).get("poetry", {}).get("dependencies", {}).keys()
+        )
 
         for dep in deps:
-            dep_name = dep.split("[")[0].split(">")[0].split("<")[0].split("=")[0].lower().strip()
+            dep_name = (
+                dep.split("[")[0]
+                .split(">")[0]
+                .split("<")[0]
+                .split("=")[0]
+                .lower()
+                .strip()
+            )
             if dep_name in self._requirements_patterns:
                 fw = self._requirements_patterns[dep_name]
                 if fw not in detections:
@@ -200,7 +208,7 @@ class ArchetypeDetector:
                     detections[fw].evidence.append(f"pyproject.toml: {dep_name}")
 
     def _scan_requirements(
-        self, path: Path, detections: dict[FrameworkType, FrameworkDetection]
+        self, path: Path, detections: dict[str, FrameworkDetection]
     ) -> None:
         """Scan requirements.txt for framework indicators."""
         try:
@@ -214,7 +222,14 @@ class ArchetypeDetector:
                 continue
 
             # Extract package name
-            pkg_name = line.split("[")[0].split(">")[0].split("<")[0].split("=")[0].lower().strip()
+            pkg_name = (
+                line.split("[")[0]
+                .split(">")[0]
+                .split("<")[0]
+                .split("=")[0]
+                .lower()
+                .strip()
+            )
             if pkg_name in self._requirements_patterns:
                 fw = self._requirements_patterns[pkg_name]
                 if fw not in detections:
@@ -227,7 +242,7 @@ class ArchetypeDetector:
                     detections[fw].evidence.append(f"{path.name}: {pkg_name}")
 
     def _scan_imports(
-        self, file: Path, detections: dict[FrameworkType, FrameworkDetection]
+        self, file: Path, detections: dict[str, FrameworkDetection]
     ) -> None:
         """Parse a Python file and extract import statements."""
         try:
@@ -248,7 +263,7 @@ class ArchetypeDetector:
         self,
         name: str,
         file: Path,
-        detections: dict[FrameworkType, FrameworkDetection],
+        detections: dict[str, FrameworkDetection],
     ) -> None:
         """Check if an import indicates a framework."""
         if name in self._import_indicators:
@@ -268,11 +283,15 @@ class ArchetypeDetector:
         """Mark entrypoints that belong to detected frameworks."""
         framework_types = {fw.framework for fw in frameworks}
 
+        # Check for flask-related frameworks (flask, flask_restplus, etc.)
+        has_flask = any(fw.startswith("flask") for fw in framework_types)
+        has_celery = "celery" in framework_types
+
         for ep in entrypoints:
             # Flask entrypoints
-            if ep.type.name.startswith("FLASK") and FrameworkType.FLASK in framework_types:
+            if ep.type.name.startswith("FLASK") and has_flask:
                 pass  # Already marked
 
             # Celery entrypoints
-            if ep.type.name.startswith("CELERY") and FrameworkType.CELERY in framework_types:
+            if ep.type.name.startswith("CELERY") and has_celery:
                 pass  # Already marked

@@ -1,11 +1,11 @@
 """JSON output writers for config and results."""
 
 import json
-from datetime import datetime
 from pathlib import Path
 
-from openprune.models.archetype import ArchetypeResult, EntrypointType, FrameworkType
+from openprune.models.archetype import ArchetypeResult
 from openprune.models.results import AnalysisResults
+from openprune.models.verification import VerificationResults
 
 
 def write_config(result: ArchetypeResult, output_path: Path) -> None:
@@ -20,13 +20,14 @@ def write_config(result: ArchetypeResult, output_path: Path) -> None:
         },
         "frameworks": [
             {
-                "type": fw.framework.name.lower(),
+                "type": fw.framework,  # Now a string from plugin
                 "confidence": fw.confidence,
                 "evidence": fw.evidence[:5],  # Limit to 5 examples
             }
             for fw in result.frameworks
         ],
         "entrypoints": _build_entrypoint_config(result),
+        "detected_entrypoints": _build_detected_entrypoints(result),
         "analysis": {
             "include": ["**/*.py"],
             "exclude": [
@@ -89,7 +90,11 @@ def _build_entrypoint_config(result: ArchetypeResult) -> list[dict]:
     # Add default patterns for detected frameworks
     framework_types = {fw.framework for fw in result.frameworks}
 
-    if FrameworkType.FLASK in framework_types:
+    # Check for flask-related frameworks (flask, flask_restplus, etc.)
+    has_flask = any(fw.startswith("flask") for fw in framework_types)
+    has_celery = "celery" in framework_types
+
+    if has_flask:
         type_patterns.setdefault(
             "flask_route",
             {"type": "flask_route", "pattern": "@*.route", "mark_as_used": True},
@@ -99,7 +104,7 @@ def _build_entrypoint_config(result: ArchetypeResult) -> list[dict]:
             {"type": "flask_cli", "pattern": "@*.cli.command", "mark_as_used": True},
         )
 
-    if FrameworkType.CELERY in framework_types:
+    if has_celery:
         type_patterns.setdefault(
             "celery_task",
             {"type": "celery_task", "pattern": "@*.task", "mark_as_used": True},
@@ -126,6 +131,21 @@ def _build_entrypoint_config(result: ArchetypeResult) -> list[dict]:
     return list(type_patterns.values())
 
 
+def _build_detected_entrypoints(result: ArchetypeResult) -> list[dict]:
+    """Build list of actual detected entrypoints for use by analysis phase."""
+    return [
+        {
+            "name": ep.name,
+            "type": ep.type.name.lower(),
+            "file": str(ep.file),
+            "line": ep.line,
+            "decorator": ep.decorator,
+            "arguments": ep.arguments,
+        }
+        for ep in result.entrypoints
+    ]
+
+
 def write_results(results: AnalysisResults, output_path: Path) -> None:
     """Write the openprune-results.json file."""
     data = results.to_dict()
@@ -146,10 +166,8 @@ def load_results(results_path: Path) -> dict:
         return json.load(f)
 
 
-def write_verification_results(results: "VerificationResults", output_path: Path) -> None:
+def write_verification_results(results: VerificationResults, output_path: Path) -> None:
     """Write the verified.json file."""
-    from openprune.models.verification import VerificationResults
-
     data = results.to_dict()
 
     with open(output_path, "w", encoding="utf-8") as f:

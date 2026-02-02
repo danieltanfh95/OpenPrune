@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from openprune.models.archetype import EntrypointType, FrameworkType
+from openprune.models.archetype import EntrypointType
 from openprune.plugins import PluginRegistry, get_registry, reset_registry
 from openprune.plugins.protocol import DecoratorScoringRule, DetectedEntrypoint, ImplicitName
 
@@ -24,8 +24,8 @@ class TestPluginRegistry:
                 return "mock"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.FLASK
+            def framework_type(self) -> str:
+                return "flask"
 
         plugin = MockPlugin()
         registry.register(plugin)
@@ -43,8 +43,8 @@ class TestPluginRegistry:
                 return "flask"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.FLASK
+            def framework_type(self) -> str:
+                return "flask"
 
         class CeleryPlugin:
             @property
@@ -52,15 +52,15 @@ class TestPluginRegistry:
                 return "celery"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.CELERY
+            def framework_type(self) -> str:
+                return "celery"
 
         registry.register(FlaskPlugin())
         registry.register(CeleryPlugin())
 
-        flask_plugins = registry.get_by_framework(FrameworkType.FLASK)
-        celery_plugins = registry.get_by_framework(FrameworkType.CELERY)
-        django_plugins = registry.get_by_framework(FrameworkType.DJANGO)
+        flask_plugins = registry.get_by_framework("flask")
+        celery_plugins = registry.get_by_framework("celery")
+        django_plugins = registry.get_by_framework("django")
 
         assert len(flask_plugins) == 1
         assert flask_plugins[0].name == "flask"
@@ -78,8 +78,8 @@ class TestPluginRegistry:
                 return "plugin1"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.FLASK
+            def framework_type(self) -> str:
+                return "flask"
 
         class Plugin2:
             @property
@@ -87,8 +87,8 @@ class TestPluginRegistry:
                 return "plugin2"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.CELERY
+            def framework_type(self) -> str:
+                return "celery"
 
         registry.register(Plugin1())
         registry.register(Plugin2())
@@ -109,8 +109,8 @@ class TestPluginRegistry:
                 return "flask"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.FLASK
+            def framework_type(self) -> str:
+                return "flask"
 
             @property
             def import_indicators(self) -> list[str]:
@@ -122,8 +122,8 @@ class TestPluginRegistry:
                 return "celery"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.CELERY
+            def framework_type(self) -> str:
+                return "celery"
 
             @property
             def import_indicators(self) -> list[str]:
@@ -134,10 +134,10 @@ class TestPluginRegistry:
 
         indicators = registry.get_all_import_indicators()
 
-        assert indicators["flask"] == FrameworkType.FLASK
-        assert indicators["Flask"] == FrameworkType.FLASK
-        assert indicators["celery"] == FrameworkType.CELERY
-        assert indicators["Celery"] == FrameworkType.CELERY
+        assert indicators["flask"] == "flask"
+        assert indicators["Flask"] == "flask"
+        assert indicators["celery"] == "celery"
+        assert indicators["Celery"] == "celery"
 
     def test_get_all_factory_functions(self):
         """Should aggregate factory functions from all plugins."""
@@ -149,8 +149,8 @@ class TestPluginRegistry:
                 return "flask"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.FLASK
+            def framework_type(self) -> str:
+                return "flask"
 
             @property
             def factory_functions(self) -> list[str]:
@@ -162,8 +162,8 @@ class TestPluginRegistry:
                 return "celery"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.CELERY
+            def framework_type(self) -> str:
+                return "celery"
 
             @property
             def factory_functions(self) -> list[str]:
@@ -188,8 +188,8 @@ class TestPluginRegistry:
                 return "restplus"
 
             @property
-            def framework_type(self) -> FrameworkType:
-                return FrameworkType.FLASK
+            def framework_type(self) -> str:
+                return "flask"
 
             @property
             def implicit_names(self) -> list[ImplicitName]:
@@ -250,7 +250,7 @@ class TestFlaskPlugin:
         plugin = registry.get("flask")
 
         assert plugin.name == "flask"
-        assert plugin.framework_type == FrameworkType.FLASK
+        assert plugin.framework_type == "flask"
         assert "flask" in plugin.import_indicators
         assert "Flask" in plugin.import_indicators
         assert "create_app" in plugin.factory_functions
@@ -435,7 +435,7 @@ class TestCeleryPlugin:
         plugin = registry.get("celery")
 
         assert plugin.name == "celery"
-        assert plugin.framework_type == FrameworkType.CELERY
+        assert plugin.framework_type == "celery"
         assert "celery" in plugin.import_indicators
 
     def test_detect_task_decorator(self, tmp_path: Path):

@@ -15,7 +15,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from openprune import __version__
-from openprune.analysis.imports import ImportResolver
+from openprune.analysis.imports import ImportGraph, ImportResolver
 from openprune.analysis.scoring import (
     SuspicionScorer,
     classify_confidence,
@@ -45,7 +45,7 @@ from openprune.models.results import (
 )
 from openprune.output.json_writer import write_config, write_results
 from openprune.output.tree import build_results_tree, build_summary_tree, display_tree
-from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path, get_verified_path
+from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path
 
 app = typer.Typer(
     name="openprune",
@@ -65,23 +65,6 @@ def version_callback(value: bool) -> None:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    version: bool = typer.Option(
-        False,
-        "--version",
-        "-V",
-        callback=version_callback,
-        is_eager=True,
-        help="Show version and exit",
-    ),
-) -> None:
-    """Detect dead code in Python Flask+Celery applications."""
-    if ctx.invoked_subcommand is None:
-        # Default to run command
-        ctx.invoke(run)
-
-
-@app.command()
-def run(
     path: Path = typer.Argument(
         Path("."),
         help="Path to the Python project to analyze",
@@ -108,16 +91,41 @@ def run(
         True,
         "--interactive/--no-interactive",
         "-i/-I",
-        help="Enable/disable interactive mode",
+        help="Interactive mode (default) launches LLM session; non-interactive runs batch verification",
     ),
     include_ignored: bool = typer.Option(
         False,
         "--include-ignored",
         help="Include files normally excluded by .gitignore and pyproject.toml",
     ),
+    llm: str = typer.Option(
+        "claude",
+        "--llm",
+        "-l",
+        help="LLM CLI tool to use for verification (e.g., claude, kimi, opencode)",
+    ),
+    min_confidence: int = typer.Option(
+        70,
+        "--min-confidence",
+        "-m",
+        help="Minimum confidence to include for verification",
+    ),
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=version_callback,
+        is_eager=True,
+        help="Show version and exit",
+    ),
 ) -> None:
-    """Run full detection and analysis (default command)."""
-    run_interactive(path, config, output, verbose, interactive, include_ignored)
+    """Detect dead code in Python Flask+Celery applications."""
+    if ctx.invoked_subcommand is None:
+        # Run full pipeline when no subcommand is given
+        run_pipeline(
+            path, config, output, verbose, interactive, include_ignored,
+            llm=llm, min_confidence=min_confidence,
+        )
 
 
 @app.command()
@@ -295,7 +303,7 @@ def verify(
         console.print(f"\n[dim]Using LLM:[/] {llm}")
         console.print(f"[dim]Min confidence:[/] {min_confidence}%")
         console.print(f"[dim]Working directory:[/] {path}")
-        console.print(f"[dim]The LLM has access to .openprune/ files[/]\n")
+        console.print("[dim]The LLM has access to .openprune/ files[/]\n")
 
         from openprune.verification.session import launch_llm_session
 
@@ -394,15 +402,17 @@ def show(
         display_tree(summary_tree)
 
 
-def run_interactive(
+def run_pipeline(
     path: Path,
     config_path: Optional[Path],
     output_path: Optional[Path],
     verbose: bool,
     interactive: bool,
     include_ignored: bool = False,
+    llm: str = "claude",
+    min_confidence: int = 70,
 ) -> None:
-    """Run OpenPrune in interactive mode."""
+    """Run OpenPrune full pipeline: detect, analyze, and verify."""
     path = path.resolve()
 
     # Use .openprune/ directory by default
@@ -459,6 +469,50 @@ def run_interactive(
             tree = build_results_tree(results.dead_code, path)
             display_tree(tree)
 
+    # Phase 4: LLM Verification
+    candidates_to_verify = [
+        item for item in results.dead_code
+        if item.confidence >= min_confidence
+    ]
+
+    if not candidates_to_verify:
+        console.print(f"\n[dim]No candidates above {min_confidence}% confidence to verify.[/]")
+        return
+
+    # Ask to proceed with verification (in interactive mode)
+    if interactive:
+        proceed = Confirm.ask(
+            f"\n[bold]Proceed with LLM verification of {len(candidates_to_verify)} candidates?[/]",
+            default=True,
+        )
+        if not proceed:
+            console.print("[yellow]Verification skipped.[/]")
+            return
+
+    # Run verification
+    if interactive:
+        # Interactive mode: exec into LLM CLI session
+        console.print(Panel.fit("[bold blue]OpenPrune - LLM Verification[/]"))
+        console.print(f"\n[dim]Using LLM:[/] {llm}")
+        console.print(f"[dim]Min confidence:[/] {min_confidence}%")
+        console.print(f"[dim]Working directory:[/] {path}")
+        console.print("[dim]The LLM has access to .openprune/ files[/]\n")
+
+        from openprune.verification.session import launch_llm_session
+
+        try:
+            launch_llm_session(path, llm, min_confidence)
+        except RuntimeError as e:
+            console.print(f"[red]Verification error:[/] {e}")
+    else:
+        # Non-interactive mode: batch verification
+        from openprune.verification.batch import run_batch_verification
+
+        try:
+            run_batch_verification(path, llm, min_confidence)
+        except RuntimeError as e:
+            console.print(f"[red]Verification error:[/] {e}")
+
 
 def _display_archetype_results(result) -> None:
     """Display archetype detection results."""
@@ -466,7 +520,7 @@ def _display_archetype_results(result) -> None:
         console.print("[bold green]✓[/] Detected frameworks:")
         for fw in result.frameworks:
             evidence_count = len(fw.evidence)
-            console.print(f"  • {fw.framework.name} ({evidence_count} files)")
+            console.print(f"  • {fw.framework} ({evidence_count} files)")
     else:
         console.print("[yellow]![/] No frameworks detected")
 
@@ -563,10 +617,10 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
 
             progress.update(parse_task, advance=1)
 
-        # Build import graph
+        # Build import graph with edges
         progress.add_task("Building import graph...", total=None)
         resolver = ImportResolver(path)
-        import_graph = resolver.build_graph(py_files)
+        import_graph = resolver.build_graph(py_files, file_results)
 
         # Get file age info for scoring
         progress.add_task("Collecting file age info...", total=None)
@@ -579,7 +633,13 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     console.print("[dim]Building call graph and analyzing reachability...[/]")
     call_graph = _build_call_graph(all_definitions, all_usages_list)
 
-    # Map entrypoint types to decorator patterns
+    # First, mark symbols based on detected_entrypoints from config (from plugin detection)
+    detected_entrypoints = config.get("detected_entrypoints", [])
+    if detected_entrypoints:
+        console.print(f"[dim]Marking {len(detected_entrypoints)} detected entrypoints...[/]")
+        _mark_detected_entrypoints(all_definitions, detected_entrypoints, path)
+
+    # Map entrypoint types to decorator patterns (fallback for decorator-based matching)
     entrypoint_decorator_patterns = {
         "flask_route": ["route", "get", "post", "put", "delete", "patch"],
         "flask_blueprint": ["route", "get", "post", "put", "delete", "patch"],
@@ -595,8 +655,11 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
         "main_block": [],  # Not a decorator-based entrypoint
     }
 
-    # Mark symbols as entrypoints based on decorators
+    # Mark symbols as entrypoints based on decorators (fallback matching)
     for qname, symbol in all_definitions.items():
+        if symbol.is_entrypoint:
+            continue  # Already marked by detected_entrypoints
+
         # Check if symbol name matches factory function pattern
         if "factory_function" in entrypoint_types and symbol.name in {
             "create_app", "make_app", "make_celery", "create_celery", "app_factory"
@@ -632,10 +695,16 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
         for qname, symbol in all_definitions.items()
         if symbol.is_entrypoint
     }
-    reachable_modules = _find_reachable_modules(entrypoint_files, file_results)
+    reachable_modules = _find_reachable_modules(
+        entrypoint_files, import_graph, resolver
+    )
 
-    # All analyzed modules
-    all_modules = {py_file.stem for py_file in py_files}
+    # All analyzed modules (using full module paths, not just stems)
+    all_modules = {
+        resolver._path_to_module(py_file)
+        for py_file in py_files
+        if resolver._path_to_module(py_file)
+    }
     orphaned_modules = all_modules - reachable_modules
 
     if orphaned_modules:
@@ -653,9 +722,9 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
         # Score the node
         confidence, reasons = scorer.score(node, all_usages, file_age_info)
 
-        # Check module-level reachability
-        module_name = symbol.location.file.stem
-        if module_name in orphaned_modules:
+        # Check module-level reachability (using full module path)
+        module_name = resolver._path_to_module(symbol.location.file)
+        if module_name and module_name in orphaned_modules:
             # Entire file is orphaned - very high confidence
             confidence = 100
             reasons = ["Entire file is unreachable from any entrypoint"]
@@ -692,7 +761,8 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     # Build orphaned files list
     orphaned_file_list: list[OrphanedFile] = []
     for py_file in py_files:
-        if py_file.stem in orphaned_modules:
+        file_module_name = resolver._path_to_module(py_file)
+        if file_module_name and file_module_name in orphaned_modules:
             result = file_results.get(py_file)
             if result:
                 # Count symbols and lines
@@ -705,7 +775,7 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
                 orphaned_file_list.append(
                     OrphanedFile(
                         file=str(py_file),
-                        module_name=py_file.stem,
+                        module_name=file_module_name,
                         symbols=symbol_count,
                         lines=line_count,
                     )
@@ -805,6 +875,50 @@ def _should_ignore_by_decorator(symbol: Symbol, patterns: list[str]) -> bool:
     return False
 
 
+def _mark_detected_entrypoints(
+    all_definitions: dict[str, Symbol],
+    detected_entrypoints: list[dict],
+    project_path: Path,
+) -> None:
+    """Mark symbols as entrypoints based on detected_entrypoints from config.
+
+    This uses entrypoints detected by plugins during the detection phase,
+    allowing non-decorator-based patterns (like api.add_resource()) to be recognized.
+    """
+    # Build lookup index by (file, line) and (file, name) for fast matching
+    file_line_index: dict[tuple[str, int], Symbol] = {}
+    file_name_index: dict[tuple[str, str], list[Symbol]] = {}
+
+    for qname, symbol in all_definitions.items():
+        file_key = str(symbol.location.file)
+        file_line_index[(file_key, symbol.location.line)] = symbol
+
+        name_key = (file_key, symbol.name)
+        if name_key not in file_name_index:
+            file_name_index[name_key] = []
+        file_name_index[name_key].append(symbol)
+
+    matched_count = 0
+    for ep in detected_entrypoints:
+        ep_file = ep.get("file", "")
+        ep_line = ep.get("line", 0)
+        ep_name = ep.get("name", "")
+
+        # Try exact match by file + line
+        symbol = file_line_index.get((ep_file, ep_line))
+        if symbol:
+            symbol.is_entrypoint = True
+            matched_count += 1
+            continue
+
+        # Try match by file + name (for when lines have shifted)
+        symbols = file_name_index.get((ep_file, ep_name), [])
+        if symbols:
+            for sym in symbols:
+                sym.is_entrypoint = True
+                matched_count += 1
+
+
 def _build_call_graph(
     all_definitions: dict[str, Symbol],
     all_usages: list[Usage],
@@ -843,27 +957,29 @@ def _find_reachable_symbols(
 
 def _find_reachable_modules(
     entrypoint_files: set[Path],
-    file_results: dict[Path, FileAnalysisResult],
+    import_graph: ImportGraph,
+    resolver: ImportResolver,
 ) -> set[str]:
-    """Find all modules reachable via imports from entrypoint files."""
-    reachable = {f.stem for f in entrypoint_files}
-    to_visit = list(reachable)
+    """Find all modules reachable via imports from entrypoint files.
 
-    # Build module import graph
-    module_imports: dict[str, set[str]] = {}
-    for py_file, result in file_results.items():
-        module_imports[py_file.stem] = {
-            imp.module.split(".")[0]  # Get top-level module
-            for imp in result.imports
-            if imp.module
-        }
+    Uses full module paths (e.g., 'src.utils.helpers') instead of just file stems
+    to avoid false positives from collisions (e.g., multiple 'utils.py' files).
+    """
+    # Get entrypoint module names (full dotted paths)
+    entrypoint_modules = []
+    for ep_file in entrypoint_files:
+        module_name = resolver._path_to_module(ep_file)
+        if module_name:
+            entrypoint_modules.append(module_name)
 
-    while to_visit:
-        current = to_visit.pop()
-        for imported in module_imports.get(current, set()):
-            if imported not in reachable:
-                reachable.add(imported)
-                to_visit.append(imported)
+    # Use ImportGraph's orphaned module detection (proper BFS traversal)
+    orphaned = set(import_graph.get_orphaned_modules(entrypoint_modules))
+
+    # Return reachable = all internal modules - orphaned
+    all_internal = {
+        name for name, info in import_graph.modules.items() if not info.is_external
+    }
+    reachable = all_internal - orphaned
 
     return reachable
 

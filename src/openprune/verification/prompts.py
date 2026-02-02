@@ -165,7 +165,7 @@ def build_combined_prompt(project_path: Path, min_confidence: int = 70) -> str:
     """
     system_prompt = build_system_prompt(project_path, min_confidence)
 
-    initial_task = f"""Start the dead code verification session.
+    initial_task = """Start the dead code verification session.
 
 1. First, read .openprune/results.json to see ALL dead code candidates
 2. Review items across ALL confidence levels (not just high confidence!)

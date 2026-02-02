@@ -11,7 +11,6 @@ from openprune.models.archetype import (
     Entrypoint,
     EntrypointType,
     FrameworkDetection,
-    FrameworkType,
     LintingConfig,
 )
 from openprune.models.results import (
@@ -105,12 +104,12 @@ class TestWriteConfig:
             project_root=tmp_path,
             frameworks=[
                 FrameworkDetection(
-                    framework=FrameworkType.FLASK,
+                    framework="flask",
                     confidence=0.95,
                     evidence=["app.py"],
                 ),
                 FrameworkDetection(
-                    framework=FrameworkType.CELERY,
+                    framework="celery",
                     confidence=0.85,
                     evidence=["tasks.py"],
                 ),
@@ -174,7 +173,7 @@ class TestWriteConfig:
         result = ArchetypeResult(
             project_root=tmp_path,
             frameworks=[
-                FrameworkDetection(framework=FrameworkType.FLASK, confidence=0.9, evidence=[]),
+                FrameworkDetection(framework="flask", confidence=0.9, evidence=[]),
             ],
             entrypoints=[],
             linting_config=LintingConfig(),
@@ -195,7 +194,7 @@ class TestWriteConfig:
         result = ArchetypeResult(
             project_root=tmp_path,
             frameworks=[
-                FrameworkDetection(framework=FrameworkType.CELERY, confidence=0.9, evidence=[]),
+                FrameworkDetection(framework="celery", confidence=0.9, evidence=[]),
             ],
             entrypoints=[],
             linting_config=LintingConfig(),
@@ -428,7 +427,7 @@ class TestRoundTrip:
             project_root=tmp_path,
             python_version="3.11",
             frameworks=[
-                FrameworkDetection(framework=FrameworkType.FLASK, confidence=0.9, evidence=["app.py"]),
+                FrameworkDetection(framework="flask", confidence=0.9, evidence=["app.py"]),
             ],
             entrypoints=[
                 Entrypoint(

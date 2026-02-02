@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from typing import TYPE_CHECKING, Iterator
+from typing import Iterator
 
-if TYPE_CHECKING:
-    from openprune.models.archetype import FrameworkType
-    from openprune.plugins.protocol import FrameworkPlugin
+from openprune.plugins.protocol import FrameworkPlugin
 
 
 class PluginRegistry:
@@ -16,7 +14,7 @@ class PluginRegistry:
 
     def __init__(self) -> None:
         self._plugins: dict[str, FrameworkPlugin] = {}
-        self._by_framework: dict[FrameworkType, list[FrameworkPlugin]] = {}
+        self._by_framework: dict[str, list[FrameworkPlugin]] = {}
 
     def register(self, plugin: FrameworkPlugin) -> None:
         """Register a plugin instance."""
@@ -31,7 +29,7 @@ class PluginRegistry:
         """Get a plugin by name."""
         return self._plugins.get(name)
 
-    def get_by_framework(self, framework: FrameworkType) -> list[FrameworkPlugin]:
+    def get_by_framework(self, framework: str) -> list[FrameworkPlugin]:
         """Get all plugins for a framework type."""
         return self._by_framework.get(framework, [])
 
@@ -39,9 +37,9 @@ class PluginRegistry:
         """Iterate over all registered plugins."""
         yield from self._plugins.values()
 
-    def get_all_import_indicators(self) -> dict[str, FrameworkType]:
+    def get_all_import_indicators(self) -> dict[str, str]:
         """Get combined import indicators from all plugins."""
-        indicators: dict[str, FrameworkType] = {}
+        indicators: dict[str, str] = {}
         for plugin in self._plugins.values():
             for indicator in plugin.import_indicators:
                 indicators[indicator] = plugin.framework_type
@@ -56,8 +54,6 @@ class PluginRegistry:
 
     def get_all_implicit_names(self) -> set[str]:
         """Get all implicit names from all plugins (for basic matching)."""
-        from openprune.plugins.protocol import ImplicitName
-
         names: set[str] = set()
         for plugin in self._plugins.values():
             for implicit in plugin.implicit_names:

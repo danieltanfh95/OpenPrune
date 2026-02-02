@@ -22,16 +22,16 @@ class TestArchetypeDetection:
         detector = ArchetypeDetector()
         result = detector.detect(FIXTURES_PATH)
 
-        framework_types = [fw.framework.name for fw in result.frameworks]
-        assert "FLASK" in framework_types
+        framework_types = [fw.framework for fw in result.frameworks]
+        assert "flask" in framework_types
 
     def test_detects_celery_framework(self):
         """Should detect Celery framework in fixture app."""
         detector = ArchetypeDetector()
         result = detector.detect(FIXTURES_PATH)
 
-        framework_types = [fw.framework.name for fw in result.frameworks]
-        assert "CELERY" in framework_types
+        framework_types = [fw.framework for fw in result.frameworks]
+        assert "celery" in framework_types
 
     def test_detects_flask_routes(self):
         """Should detect Flask route entrypoints."""
@@ -352,8 +352,9 @@ class TestFullPipelineWithFixture:
         assert len(results.orphaned_files) > 0
 
         # deprecated.py should be orphaned (not imported anywhere)
+        # module_name now uses full module paths (e.g., "utils.deprecated" not just "deprecated")
         orphaned_names = [of.module_name for of in results.orphaned_files]
-        assert "deprecated" in orphaned_names
+        assert any("deprecated" in name for name in orphaned_names)
 
     def test_orphaned_file_symbols_have_100_confidence(self, tmp_path):
         """Symbols in orphaned files should have 100% confidence."""
@@ -436,7 +437,7 @@ class TestInfrastructureIntegration:
         detector = ArchetypeDetector()
         result = detector.detect(FIXTURES_PATH)
 
-        # Should find FLASK_APP and gunicorn entrypoint
+        # Should find flask_APP and gunicorn entrypoint
         entrypoint_types = [ep.type.name for ep in result.entrypoints]
         assert "INFRA_ENTRYPOINT" in entrypoint_types or any(
             ep.name == "app.py" or "app" in ep.name
@@ -536,8 +537,8 @@ class TestExclusionIntegration:
         result = detector.detect(tmp_path)
 
         # Should detect Flask from src/app.py
-        framework_types = [fw.framework.name for fw in result.frameworks]
-        assert "FLASK" in framework_types
+        framework_types = [fw.framework for fw in result.frameworks]
+        assert "flask" in framework_types
 
         # Entrypoints should NOT include anything from ignored_dir
         for ep in result.entrypoints:
@@ -576,14 +577,14 @@ exclude = ["migrations"]
         # Without include_ignored - should not find celery
         detector_normal = ArchetypeDetector(include_ignored=False)
         result_normal = detector_normal.detect(tmp_path)
-        normal_frameworks = {fw.framework.name for fw in result_normal.frameworks}
+        normal_frameworks = {fw.framework for fw in result_normal.frameworks}
 
         # With include_ignored - should find celery
         detector_ignored = ArchetypeDetector(include_ignored=True)
         result_ignored = detector_ignored.detect(tmp_path)
-        ignored_frameworks = {fw.framework.name for fw in result_ignored.frameworks}
+        ignored_frameworks = {fw.framework for fw in result_ignored.frameworks}
 
-        assert "FLASK" in normal_frameworks
-        assert "CELERY" not in normal_frameworks  # Ignored by gitignore
-        assert "FLASK" in ignored_frameworks
-        assert "CELERY" in ignored_frameworks  # Include-ignored bypasses gitignore
+        assert "flask" in normal_frameworks
+        assert "celery" not in normal_frameworks  # Ignored by gitignore
+        assert "flask" in ignored_frameworks
+        assert "celery" in ignored_frameworks  # Include-ignored bypasses gitignore

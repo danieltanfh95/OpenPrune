@@ -1,11 +1,15 @@
 """Import graph building and resolution."""
 
+from __future__ import annotations
+
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
-from openprune.models.dependency import ModuleInfo
+from openprune.analysis.visitor import FileAnalysisResult
+from openprune.models.dependency import ImportInfo, ModuleInfo
 
 
 @dataclass
@@ -71,7 +75,7 @@ class ImportGraph:
         visit(module)
         return chain
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Convert to dictionary for JSON serialization."""
         return {
             "modules": {
@@ -169,18 +173,109 @@ class ImportResolver:
 
         return None
 
-    def build_graph(self, files: list[Path]) -> ImportGraph:
-        """Build an import graph from a list of files."""
+    def build_graph(
+        self,
+        files: list[Path],
+        file_results: dict[Path, FileAnalysisResult] | None = None,
+    ) -> ImportGraph:
+        """Build an import graph from a list of files and their analysis results.
+
+        Args:
+            files: List of Python file paths to include in the graph
+            file_results: Optional mapping of file paths to their analysis results.
+                         If provided, import edges will be added to the graph.
+        """
         graph = ImportGraph()
 
-        # First, add all modules
+        # First pass: add all modules
         for file in files:
             module_name = self._path_to_module(file)
             if module_name:
                 is_package = file.name == "__init__.py"
                 graph.add_module(module_name, file, is_package)
 
+        # Second pass: add import edges
+        if file_results:
+            known_modules = set(graph.modules.keys())
+            for py_file, result in file_results.items():
+                from_module = self._path_to_module(py_file)
+                if not from_module:
+                    continue
+
+                for imp in result.imports:
+                    to_module = self._resolve_import_to_module(
+                        imp, py_file, known_modules
+                    )
+                    if to_module and to_module in graph.modules:
+                        graph.add_edge(from_module, to_module)
+
         return graph
+
+    def _resolve_import_to_module(
+        self,
+        imp: ImportInfo,
+        from_file: Path,
+        known_modules: Iterable[str],
+    ) -> str | None:
+        """Resolve an ImportInfo to a known internal module name.
+
+        Args:
+            imp: The import info to resolve
+            from_file: The file containing the import statement
+            known_modules: Set of known internal module names
+
+        Returns:
+            The resolved module name if it's a known internal module, None otherwise
+        """
+        if not imp.module:
+            return None
+
+        # Handle relative imports
+        if imp.is_relative and imp.level > 0:
+            base_module = self._path_to_module(from_file)
+            if not base_module:
+                return None
+
+            # For relative imports, calculate the base package
+            # level=1 means current package, level=2 means parent, etc.
+            parts = base_module.split(".")
+
+            # For a file like src/foo/bar.py (module: src.foo.bar),
+            # a relative import "from . import X" should resolve relative to src.foo
+            # (the parent directory of bar.py)
+            if len(parts) >= imp.level:
+                base_parts = parts[: -imp.level] if imp.level <= len(parts) else []
+                if imp.module:
+                    full_module = (
+                        ".".join(base_parts + [imp.module])
+                        if base_parts
+                        else imp.module
+                    )
+                else:
+                    full_module = ".".join(base_parts) if base_parts else ""
+            else:
+                return None
+        else:
+            full_module = imp.module
+
+        if not full_module:
+            return None
+
+        # Skip external modules early
+        if self._is_external(full_module):
+            return None
+
+        # Check if the full module or any of its parents exist in known modules
+        # This handles cases like "from utils.helpers import X"
+        # where we want to mark "utils.helpers" as imported
+        known_set = set(known_modules)
+        parts = full_module.split(".")
+        for i in range(len(parts), 0, -1):
+            candidate = ".".join(parts[:i])
+            if candidate in known_set:
+                return candidate
+
+        return None
 
     def _path_to_module(self, file: Path) -> str | None:
         """Convert a file path to a module name."""

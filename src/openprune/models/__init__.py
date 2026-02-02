@@ -5,7 +5,6 @@ from openprune.models.archetype import (
     Entrypoint,
     EntrypointType,
     FrameworkDetection,
-    FrameworkType,
     LintingConfig,
 )
 from openprune.models.dependency import (
@@ -32,7 +31,6 @@ __all__ = [
     "Entrypoint",
     "EntrypointType",
     "FrameworkDetection",
-    "FrameworkType",
     "LintingConfig",
     # Dependency models
     "DependencyNode",

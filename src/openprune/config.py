@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-from openprune.models.archetype import ArchetypeResult
 
 
 def load_config(config_path: Path) -> dict:

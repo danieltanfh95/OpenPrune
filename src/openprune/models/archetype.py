@@ -5,16 +5,9 @@ from enum import Enum, auto
 from pathlib import Path
 
 
-class FrameworkType(Enum):
-    """Supported framework types."""
-
-    FLASK = auto()
-    CELERY = auto()
-    FASTAPI = auto()
-    DJANGO = auto()
-    CLICK = auto()
-    TYPER = auto()
-    UNKNOWN = auto()
+# Framework types are now dynamic strings defined by plugins.
+# Well-known framework types include:
+#   "flask", "flask_restplus", "celery", "fastapi", "django", "click", "typer"
 
 
 class EntrypointType(Enum):
@@ -41,7 +34,7 @@ class EntrypointType(Enum):
 class FrameworkDetection:
     """Result of detecting a framework in the project."""
 
-    framework: FrameworkType
+    framework: str  # Dynamic string defined by plugins (e.g., "flask", "flask_restplus")
     confidence: float  # 0.0 - 1.0
     evidence: list[str] = field(default_factory=list)  # Files/imports indicating framework
     version: str | None = None

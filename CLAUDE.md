@@ -13,11 +13,9 @@ poetry run pytest                         # All tests with coverage
 poetry run pytest tests/test_visitor.py   # Single test file
 poetry run pytest -k "test_name"          # Single test by name
 
-# Type checking
-poetry run mypy src/
-
 # Linting
 poetry run ruff check src/
+poetry run ruff check --fix src/          # Auto-fix issues
 
 # Run the CLI
 poetry run openprune run ./path/to/project        # Full pipeline (detect + analyze)
@@ -26,6 +24,13 @@ poetry run openprune analyze ./path/to/project    # Generate .openprune/results.
 poetry run openprune verify ./path/to/project     # LLM verification (interactive)
 poetry run openprune verify ./path --batch        # LLM verification (oneshot)
 ```
+
+## Coding Conventions
+
+- **No TYPE_CHECKING guards** — Import dependencies directly, even for type annotations
+- **No try/except import hacks** — Add proper dependencies to pyproject.toml instead of conditional imports
+- **Use tomli** — Always use `import tomli` for TOML parsing (it's a dependency for all Python versions)
+- **Ruff for linting** — Run `poetry run ruff check --fix src/` before committing
 
 ## Architecture
 

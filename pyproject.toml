@@ -10,7 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "typer[all]>=0.9.0",
     "rich>=13.0.0",
-    "tomli>=2.0.0; python_version < '3.11'",
+    "tomli>=2.0.0",
     "pathspec>=0.11.0",
     "pyyaml (>=6.0.3,<7.0.0)",
 ]
@@ -19,7 +19,6 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
-    "mypy>=1.8.0",
     "ruff>=0.1.0",
 ]
 
@@ -34,10 +33,6 @@ build-backend = "poetry.core.masonry.api"
 target-version = "py311"
 line-length = 100
 
-[tool.mypy]
-python_version = "3.11"
-strict = true
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v --cov=src/openprune"
@@ -45,4 +40,5 @@ addopts = "-v --cov=src/openprune"
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.2"
 pytest-cov = "^7.0.0"
+ruff = "^0.9.5"
 

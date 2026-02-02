@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from openprune.models.archetype import EntrypointType, FrameworkType
+from openprune.models.archetype import EntrypointType
 from openprune.plugins.protocol import (
     DecoratorScoringRule,
     DetectedEntrypoint,
@@ -46,8 +46,8 @@ class CeleryPlugin:
         return "celery"
 
     @property
-    def framework_type(self) -> FrameworkType:
-        return FrameworkType.CELERY
+    def framework_type(self) -> str:
+        return "celery"
 
     @property
     def import_indicators(self) -> list[str]:

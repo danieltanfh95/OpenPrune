@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from openprune.models.archetype import EntrypointType, FrameworkType
+from openprune.models.archetype import EntrypointType
 from openprune.plugins.protocol import (
     DecoratorScoringRule,
     DetectedEntrypoint,
@@ -34,8 +34,8 @@ class FlaskRestPlusPlugin:
         return "flask-restplus"
 
     @property
-    def framework_type(self) -> FrameworkType:
-        return FrameworkType.FLASK  # Extends Flask
+    def framework_type(self) -> str:
+        return "flask_restplus"
 
     @property
     def import_indicators(self) -> list[str]:

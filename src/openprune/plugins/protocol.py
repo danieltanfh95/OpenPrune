@@ -5,10 +5,9 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    from openprune.models.archetype import EntrypointType, FrameworkType
+from openprune.models.archetype import EntrypointType
 
 
 @dataclass
@@ -57,8 +56,8 @@ class FrameworkPlugin(Protocol):
         ...
 
     @property
-    def framework_type(self) -> FrameworkType:
-        """The framework type this plugin handles."""
+    def framework_type(self) -> str:
+        """The framework type this plugin handles (e.g., 'flask', 'flask_restplus')."""
         ...
 
     @property
