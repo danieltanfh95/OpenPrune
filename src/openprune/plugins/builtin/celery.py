@@ -24,14 +24,37 @@ DECORATOR_PATTERNS: dict[tuple[str, ...], EntrypointType] = {
     # Celery tasks
     ("celery", "task"): EntrypointType.CELERY_TASK,
     ("app", "task"): EntrypointType.CELERY_TASK,
-    # Celery signals
+    # Celery task signals
     ("task_success", "connect"): EntrypointType.CELERY_SIGNAL,
     ("task_failure", "connect"): EntrypointType.CELERY_SIGNAL,
     ("task_prerun", "connect"): EntrypointType.CELERY_SIGNAL,
     ("task_postrun", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("task_revoked", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("task_rejected", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("task_retry", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("task_unknown", "connect"): EntrypointType.CELERY_SIGNAL,
+    # Worker lifecycle signals
+    ("worker_process_init", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("worker_process_shutdown", "connect"): EntrypointType.CELERY_SIGNAL,
     ("worker_ready", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("worker_shutting_down", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("worker_init", "connect"): EntrypointType.CELERY_SIGNAL,
+    # Celery daemon signals
     ("celeryd_init", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("celeryd_after_setup", "connect"): EntrypointType.CELERY_SIGNAL,
+    # Beat signals
     ("beat_init", "connect"): EntrypointType.CELERY_SIGNAL,
+    ("beat_embedded_init", "connect"): EntrypointType.CELERY_SIGNAL,
+}
+
+# Signal names for nested patterns like @signals.worker_process_init.connect
+CELERY_SIGNAL_NAMES = {
+    "task_success", "task_failure", "task_prerun", "task_postrun",
+    "task_revoked", "task_rejected", "task_retry", "task_unknown",
+    "worker_process_init", "worker_process_shutdown", "worker_ready",
+    "worker_shutting_down", "worker_init",
+    "celeryd_init", "celeryd_after_setup",
+    "beat_init", "beat_embedded_init",
 }
 
 # Factory function names for Celery apps
@@ -153,6 +176,23 @@ class _CeleryVisitor(ast.NodeVisitor):
                 # Check for signal handlers like @task_success.connect
                 return self._check_signal_decorator(decorator, func, obj, attr)
 
+            # @signals.X.connect() - Nested attribute like @signals.celeryd_init.connect
+            case ast.Call(
+                func=ast.Attribute(
+                    value=ast.Attribute(value=ast.Name(id=module), attr=signal_name),
+                    attr="connect",
+                )
+            ):
+                if signal_name in CELERY_SIGNAL_NAMES:
+                    return DetectedEntrypoint(
+                        name=func.name,
+                        type=EntrypointType.CELERY_SIGNAL,
+                        line=func.lineno,
+                        file=self.file_path,
+                        decorator=f"@{module}.{signal_name}.connect",
+                        arguments=self._extract_decorator_args(decorator),
+                    )
+
             # @app.task without call - Attribute only
             case ast.Attribute(value=ast.Name(id=obj), attr=attr):
                 pattern = (obj, attr)
@@ -163,6 +203,20 @@ class _CeleryVisitor(ast.NodeVisitor):
                         line=func.lineno,
                         file=self.file_path,
                         decorator=f"@{obj}.{attr}",
+                    )
+
+            # @signals.X.connect without call - Nested attribute
+            case ast.Attribute(
+                value=ast.Attribute(value=ast.Name(id=module), attr=signal_name),
+                attr="connect",
+            ):
+                if signal_name in CELERY_SIGNAL_NAMES:
+                    return DetectedEntrypoint(
+                        name=func.name,
+                        type=EntrypointType.CELERY_SIGNAL,
+                        line=func.lineno,
+                        file=self.file_path,
+                        decorator=f"@{module}.{signal_name}.connect",
                     )
 
             # @shared_task() - Call with name

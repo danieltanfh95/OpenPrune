@@ -493,6 +493,56 @@ def on_success(sender, **kwargs):
         signal_eps = [ep for ep in entrypoints if ep.type == EntrypointType.CELERY_SIGNAL]
         assert any(ep.name == "on_success" for ep in signal_eps)
 
+    def test_detect_worker_lifecycle_signals(self, tmp_path: Path):
+        """Should detect worker lifecycle signal handlers like worker_process_init."""
+        registry = get_registry()
+        plugin = registry.get("celery")
+
+        source = '''
+from celery.signals import worker_process_init, worker_process_shutdown
+
+@worker_process_init.connect
+def on_worker_init(**kwargs):
+    pass
+
+@worker_process_shutdown.connect
+def on_worker_shutdown(**kwargs):
+    pass
+'''
+        tree = ast.parse(source)
+        entrypoints = plugin.detect_entrypoints(tree, tmp_path / "workers.py")
+
+        signal_eps = [ep for ep in entrypoints if ep.type == EntrypointType.CELERY_SIGNAL]
+        assert len(signal_eps) == 2
+        names = {ep.name for ep in signal_eps}
+        assert "on_worker_init" in names
+        assert "on_worker_shutdown" in names
+
+    def test_detect_nested_signal_handlers(self, tmp_path: Path):
+        """Should detect nested signal handlers like @signals.celeryd_init.connect."""
+        registry = get_registry()
+        plugin = registry.get("celery")
+
+        source = '''
+from celery import signals
+
+@signals.celeryd_init.connect
+def init_sentry(**kwargs):
+    pass
+
+@signals.celeryd_after_setup.connect
+def capture_worker_name(sender, instance, **kwargs):
+    pass
+'''
+        tree = ast.parse(source)
+        entrypoints = plugin.detect_entrypoints(tree, tmp_path / "handlers.py")
+
+        signal_eps = [ep for ep in entrypoints if ep.type == EntrypointType.CELERY_SIGNAL]
+        assert len(signal_eps) == 2
+        names = {ep.name for ep in signal_eps}
+        assert "init_sentry" in names
+        assert "capture_worker_name" in names
+
 
 class TestFlaskRestPlusPlugin:
     """Tests for the Flask-RESTPlus plugin."""

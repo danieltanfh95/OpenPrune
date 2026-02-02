@@ -165,7 +165,11 @@ class SuspicionScorer:
         reasons.append(f"Base confidence for {symbol.type.name}: {confidence}")
 
         # Check if name is used anywhere
-        if symbol.name in used_names:
+        # Skip for imports - the "name found in usages" check is wrong for imports
+        # because common names like "datetime" appear in 100+ files, but each
+        # import should be evaluated independently within its own file.
+        # For imports, use qualified name check instead.
+        if symbol.name in used_names and symbol.type != SymbolType.IMPORT:
             confidence += self.config.name_used_penalty
             reasons.append(f"Name '{symbol.name}' found in usages: {self.config.name_used_penalty}")
 
