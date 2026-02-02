@@ -40,6 +40,7 @@ from openprune.models.results import (
     AnalysisResults,
     AnalysisSummary,
     DeadCodeItem,
+    EntrypointInfo,
     NoqaSkipped,
     OrphanedFile,
 )
@@ -803,6 +804,21 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     # Build summary
     summary = _build_summary(dead_code)
 
+    # Build entrypoint info list for results
+    entrypoint_infos: list[EntrypointInfo] = []
+    for qname in entrypoint_qnames:
+        symbol = all_definitions.get(qname)
+        if symbol and symbol.is_entrypoint:
+            entrypoint_infos.append(
+                EntrypointInfo(
+                    qualified_name=qname,
+                    type=symbol.type.name.lower(),
+                    file=str(symbol.location.file),
+                    line=symbol.location.line,
+                    decorator=None,
+                )
+            )
+
     # Build results
     results = AnalysisResults(
         version="1.0",
@@ -819,6 +835,7 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
         dead_code=dead_code,
         dependency_tree=import_graph.to_dict(),
         noqa_skipped=noqa_skipped,
+        entrypoints=entrypoint_infos,
     )
 
     # Show noqa skipped count if any
