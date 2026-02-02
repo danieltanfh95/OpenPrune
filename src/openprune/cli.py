@@ -66,9 +66,10 @@ def version_callback(value: bool) -> None:
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
-    path: Path = typer.Argument(
+    path: Path = typer.Option(
         Path("."),
-        help="Path to the Python project to analyze",
+        "--path", "-p",
+        help="Path to the Python project (default: current directory)",
     ),
     config: Optional[Path] = typer.Option(
         None,
@@ -131,9 +132,10 @@ def main(
 
 @app.command()
 def detect(
-    path: Path = typer.Argument(
+    path: Path = typer.Option(
         Path("."),
-        help="Path to the Python project to analyze",
+        "--path", "-p",
+        help="Path to the Python project (default: current directory)",
     ),
     output: Optional[Path] = typer.Option(
         None,
@@ -180,9 +182,10 @@ def detect(
 
 @app.command()
 def analyze(
-    path: Path = typer.Argument(
+    path: Path = typer.Option(
         Path("."),
-        help="Path to the Python project to analyze",
+        "--path", "-p",
+        help="Path to the Python project (default: current directory)",
     ),
     config: Optional[Path] = typer.Option(
         None,
@@ -238,11 +241,96 @@ def analyze(
         _display_summary(results)
 
 
+# Valid tier names for verification
+VALID_TIERS = {"p0", "p1", "p2", "p3", "all"}
+
+
+def _validate_tiers(tiers: list[str]) -> set[int]:
+    """Convert tier strings to priority constants."""
+    from openprune.verification.batch import (
+        PRIORITY_P0,
+        PRIORITY_P1,
+        PRIORITY_P2,
+        PRIORITY_P3,
+    )
+
+    if "all" in [t.lower() for t in tiers]:
+        return {PRIORITY_P0, PRIORITY_P1, PRIORITY_P2, PRIORITY_P3}
+
+    priority_map = {
+        "p0": PRIORITY_P0,
+        "p1": PRIORITY_P1,
+        "p2": PRIORITY_P2,
+        "p3": PRIORITY_P3,
+    }
+    result = set()
+    for t in tiers:
+        t_lower = t.lower()
+        if t_lower in priority_map:
+            result.add(priority_map[t_lower])
+        elif t_lower not in VALID_TIERS:
+            console.print(f"[yellow]Warning: Unknown tier '{t}', ignored[/]")
+
+    # Default to P0 if nothing valid was selected
+    if not result:
+        result = {PRIORITY_P0}
+
+    return result
+
+
+def _confidence_to_tiers(min_confidence: int) -> set[int]:
+    """Convert deprecated min_confidence to tier set."""
+    from openprune.verification.batch import (
+        PRIORITY_P0,
+        PRIORITY_P1,
+        PRIORITY_P2,
+        PRIORITY_P3,
+    )
+
+    tiers = set()
+    if min_confidence <= 50:
+        tiers.add(PRIORITY_P0)
+    if min_confidence <= 80:
+        tiers.add(PRIORITY_P1)
+        tiers.add(PRIORITY_P2)
+    if min_confidence <= 100:
+        tiers.add(PRIORITY_P3)
+
+    # For min_confidence=70, include P0, P1, P2 (as before)
+    if min_confidence <= 70:
+        tiers = {PRIORITY_P0, PRIORITY_P1, PRIORITY_P2}
+
+    return tiers if tiers else {PRIORITY_P0}
+
+
+def _format_tiers(tiers: set[int]) -> str:
+    """Format tier set for display."""
+    from openprune.verification.batch import (
+        PRIORITY_P0,
+        PRIORITY_P1,
+        PRIORITY_P2,
+        PRIORITY_P3,
+    )
+
+    tier_names = []
+    if PRIORITY_P0 in tiers:
+        tier_names.append("P0")
+    if PRIORITY_P1 in tiers:
+        tier_names.append("P1")
+    if PRIORITY_P2 in tiers:
+        tier_names.append("P2")
+    if PRIORITY_P3 in tiers:
+        tier_names.append("P3")
+
+    return ", ".join(tier_names) if tier_names else "none"
+
+
 @app.command()
 def verify(
-    path: Path = typer.Argument(
+    path: Path = typer.Option(
         Path("."),
-        help="Path to the Python project",
+        "--path", "-p",
+        help="Path to the Python project (default: current directory)",
     ),
     llm: str = typer.Option(
         "claude",
@@ -250,28 +338,38 @@ def verify(
         "-l",
         help="LLM CLI tool to use (e.g., claude, kimi, opencode)",
     ),
-    min_confidence: int = typer.Option(
-        70,
-        "--min-confidence",
-        "-m",
-        help="Minimum confidence to include for verification",
+    tier: list[str] = typer.Option(
+        ["p0"],
+        "--tier", "-t",
+        help="Priority tier(s) to verify: p0, p1, p2, p3, all (default: p0)",
     ),
-    batch: bool = typer.Option(
+    auto: bool = typer.Option(
         False,
-        "--batch",
-        "-b",
-        help="Run in non-interactive batch mode",
+        "--auto", "-a",
+        help="Auto mode: non-interactive single LLM call (default: interactive)",
     ),
     dry_run: bool = typer.Option(
         False,
-        "--dry-run",
-        "-n",
+        "--dry-run", "-n",
         help="Show what would be sent to LLM without executing",
     ),
     include_orphaned: bool = typer.Option(
         False,
         "--include-orphaned",
         help="Include orphaned files in LLM verification (normally auto-marked as DELETE)",
+    ),
+    # Deprecated flags (hidden, for backward compatibility)
+    batch: bool = typer.Option(
+        False,
+        "--batch", "-b",
+        hidden=True,
+        help="[DEPRECATED: use --auto] Run in non-interactive batch mode",
+    ),
+    min_confidence: Optional[int] = typer.Option(
+        None,
+        "--min-confidence", "-m",
+        hidden=True,
+        help="[DEPRECATED: use --tier] Minimum confidence to include for verification",
     ),
 ) -> None:
     """Verify dead code candidates using an LLM.
@@ -280,12 +378,32 @@ def verify(
     .openprune/ folder. The LLM can read results.json, examine source files,
     and write verdicts to verified.json.
 
-    Use --batch for non-interactive processing of each item.
+    Use --auto for non-interactive processing (single LLM call).
+
+    Priority tiers (use --tier to select):
+      p0: Medium confidence (50-79%) - highest LLM value, default
+      p1: High confidence (80-99%) non-imports
+      p2: High confidence (80-99%) imports
+      p3: 100% confidence - auto-delete candidates
+      all: All tiers
 
     Items from orphaned files (100% confidence, entire file unreachable) are
     automatically marked as DELETE without LLM verification by default. Use
     --include-orphaned to verify them with the LLM instead.
     """
+    # Handle deprecated --batch flag
+    if batch:
+        console.print("[yellow]Warning: --batch is deprecated, use --auto instead[/]")
+        auto = True
+
+    # Handle deprecated --min-confidence flag
+    selected_tiers: set[int] | None = None
+    if min_confidence is not None:
+        console.print("[yellow]Warning: --min-confidence is deprecated, use --tier instead[/]")
+        selected_tiers = _confidence_to_tiers(min_confidence)
+    else:
+        selected_tiers = _validate_tiers(tier)
+
     path = path.resolve()
     results_path = get_results_path(path)
 
@@ -295,15 +413,15 @@ def verify(
         raise typer.Exit(1)
 
     if dry_run:
-        _show_verify_dry_run(path, min_confidence)
+        _show_verify_dry_run(path, selected_tiers)
         return
 
-    if batch:
-        # Non-interactive batch mode
+    if auto:
+        # Auto mode - non-interactive single LLM call
         from openprune.verification.batch import run_batch_verification
 
         try:
-            run_batch_verification(path, llm, min_confidence, include_orphaned=include_orphaned)
+            run_batch_verification(path, llm, tiers=selected_tiers, include_orphaned=include_orphaned)
         except RuntimeError as e:
             console.print(f"[red]Error:[/] {e}")
             raise typer.Exit(1)
@@ -311,32 +429,32 @@ def verify(
         # Interactive mode - handoff to LLM CLI
         console.print(Panel.fit("[bold blue]OpenPrune - LLM Verification[/]"))
         console.print(f"\n[dim]Using LLM:[/] {llm}")
-        console.print(f"[dim]Min confidence:[/] {min_confidence}%")
+        console.print(f"[dim]Selected tiers:[/] {_format_tiers(selected_tiers)}")
         console.print(f"[dim]Working directory:[/] {path}")
         console.print("[dim]The LLM has access to .openprune/ files[/]\n")
 
         from openprune.verification.session import launch_llm_session
 
         try:
-            launch_llm_session(path, llm, min_confidence)
+            launch_llm_session(path, llm, tiers=selected_tiers)
         except RuntimeError as e:
             console.print(f"[red]Error:[/] {e}")
             raise typer.Exit(1)
 
 
-def _show_verify_dry_run(path: Path, min_confidence: int) -> None:
+def _show_verify_dry_run(path: Path, selected_tiers: set[int]) -> None:
     """Show dry-run preview for verification."""
     from openprune.output.json_writer import load_results
     from openprune.verification.batch import (
         PRIORITY_P0,
         PRIORITY_P1,
         PRIORITY_P2,
+        PRIORITY_P3,
         _assign_priority,
         _collapse_orphaned_files,
         _get_priority_label,
         _sort_by_priority,
     )
-    from openprune.verification.prompts import build_system_prompt
 
     results_path = get_results_path(path)
     data = load_results(results_path)
@@ -345,49 +463,69 @@ def _show_verify_dry_run(path: Path, min_confidence: int) -> None:
     orphaned_file_paths = {of.get("file") for of in orphaned_files}
 
     # Collapse orphaned files
-    non_orphaned, collapsed_orphans = _collapse_orphaned_files(dead_code, orphaned_file_paths)
+    non_orphaned, collapsed_orphans = _collapse_orphaned_files(
+        dead_code, orphaned_file_paths
+    )
     orphan_symbol_count = sum(f["symbol_count"] for f in collapsed_orphans)
 
-    # Filter by confidence
-    candidates = [d for d in non_orphaned if d.get("confidence", 0) >= min_confidence]
+    # Count ALL items by priority (for tier breakdown display)
+    all_priority_counts: dict[int, int] = {}
+    for item in non_orphaned:
+        p = _assign_priority(item)
+        all_priority_counts[p] = all_priority_counts.get(p, 0) + 1
+
+    # Filter by selected tiers
+    candidates = [
+        d for d in non_orphaned if _assign_priority(d) in selected_tiers
+    ]
     candidates = _sort_by_priority(candidates)
 
-    # Count by priority
-    priority_counts: dict[int, int] = {}
+    # Count selected items by priority
+    selected_counts: dict[int, int] = {}
     for item in candidates:
         p = _assign_priority(item)
-        priority_counts[p] = priority_counts.get(p, 0) + 1
+        selected_counts[p] = selected_counts.get(p, 0) + 1
 
     console.print(Panel.fit("[bold cyan]Dry Run Preview[/]"))
-    console.print(f"\n[dim]Items to verify via LLM:[/] {len(candidates)}")
-    console.print(f"[dim]Skipped (below threshold):[/] {len(dead_code) - len(candidates) - orphan_symbol_count}")
-    if collapsed_orphans:
-        console.print(f"[green]Orphaned files collapsed:[/] {len(collapsed_orphans)} files → {orphan_symbol_count} items auto-DELETE\n")
+    console.print(f"\n[dim]Selected tiers:[/] {_format_tiers(selected_tiers)}")
 
-    # Show priority breakdown
-    if priority_counts:
-        console.print("[bold]Priority breakdown:[/]")
-        for p in sorted(priority_counts.keys()):
-            label = _get_priority_label(p)
-            count = priority_counts[p]
-            color = "cyan" if p == PRIORITY_P0 else "blue" if p == PRIORITY_P1 else "yellow" if p == PRIORITY_P2 else "dim"
-            console.print(f"  [{color}]{label}:[/] {count} items")
-        console.print()
+    # Show all tiers with counts, highlight selected
+    console.print("\n[bold]Priority Tiers:[/]")
+    for p in [PRIORITY_P0, PRIORITY_P1, PRIORITY_P2, PRIORITY_P3]:
+        label = _get_priority_label(p)
+        count = all_priority_counts.get(p, 0)
+        is_selected = p in selected_tiers
+
+        if is_selected:
+            marker = "[green]✓[/]"
+            color = "green"
+        else:
+            marker = " "
+            color = "dim"
+
+        console.print(f"  {marker} [{color}]{label}:[/] {count} items")
+
+    console.print()
+
+    # Show what will be verified
+    console.print(f"[green]Items to verify via LLM:[/] {len(candidates)}")
+    skipped = len(non_orphaned) - len(candidates)
+    console.print(f"[dim]Skipped (not in selected tiers):[/] {skipped}")
+
+    if collapsed_orphans:
+        console.print(
+            f"[green]Orphaned files:[/] {len(collapsed_orphans)} files → "
+            f"{orphan_symbol_count} symbols auto-DELETE"
+        )
 
     if candidates:
-        console.print("[bold]Top 5 candidates (sorted by priority):[/]")
+        console.print("\n[bold]Top 5 candidates (sorted by priority):[/]")
         for item in candidates[:5]:
             p = _assign_priority(item)
             console.print(
                 f"  • [cyan]{item.get('name')}[/] "
                 f"({item.get('type')}, {item.get('confidence')}%, P{p})"
             )
-
-    console.print("\n[bold]System prompt preview:[/]")
-    prompt = build_system_prompt(path, min_confidence)
-    # Show first 500 chars
-    preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
-    console.print(f"[dim]{preview}[/]")
 
 
 @app.command()
@@ -1129,10 +1267,37 @@ def _build_summary(dead_code: list[DeadCodeItem]) -> AnalysisSummary:
 
 def _display_summary(results: AnalysisResults) -> None:
     """Display analysis summary."""
+    from openprune.verification.batch import (
+        PRIORITY_P0,
+        PRIORITY_P1,
+        PRIORITY_P2,
+        PRIORITY_P3,
+        PRIORITY_SKIP,
+        _assign_priority,
+        _get_priority_label,
+    )
+
     if not results.summary:
         return
 
     summary = results.summary
+
+    # Count items by priority tier
+    tier_counts: dict[int, int] = {
+        PRIORITY_P0: 0,
+        PRIORITY_P1: 0,
+        PRIORITY_P2: 0,
+        PRIORITY_P3: 0,
+        PRIORITY_SKIP: 0,
+    }
+    for item in results.dead_code:
+        # Convert DeadCodeItem to dict for _assign_priority
+        item_dict = {
+            "confidence": item.confidence,
+            "type": item.type,
+        }
+        tier = _assign_priority(item_dict)
+        tier_counts[tier] = tier_counts.get(tier, 0) + 1
 
     # Create summary panel
     table = Table(show_header=False, box=None, padding=(0, 2))
@@ -1145,10 +1310,23 @@ def _display_summary(results: AnalysisResults) -> None:
         table.add_row(f"  {dead_type}", str(count))
 
     table.add_row("", "")
-    table.add_row("By confidence:", "")
-    for conf_level, count in sorted(summary.by_confidence.items()):
-        color = {"high": "red", "medium": "yellow", "low": "green"}.get(conf_level, "white")
-        table.add_row(f"  [{color}]{conf_level}[/]", str(count))
+    table.add_row("Priority tiers (for verification):", "")
+    for p in [PRIORITY_P0, PRIORITY_P1, PRIORITY_P2, PRIORITY_P3]:
+        label = _get_priority_label(p)
+        count = tier_counts.get(p, 0)
+        # Color code: P0 yellow (needs review), P1/P2 orange, P3 red (auto-delete)
+        color = {
+            PRIORITY_P0: "yellow",
+            PRIORITY_P1: "bright_yellow",
+            PRIORITY_P2: "bright_yellow",
+            PRIORITY_P3: "red",
+        }.get(p, "white")
+        table.add_row(f"  [{color}]{label}[/]", str(count))
+
+    # Show low confidence items (likely used, not for verification)
+    skip_count = tier_counts.get(PRIORITY_SKIP, 0)
+    if skip_count > 0:
+        table.add_row("  [dim]Low conf (<50%, likely used)[/]", str(skip_count))
 
     table.add_row("", "")
     table.add_row("Estimated removable lines", str(summary.estimated_lines_removable))

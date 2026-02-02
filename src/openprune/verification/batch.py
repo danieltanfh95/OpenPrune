@@ -179,7 +179,7 @@ def _collapse_orphaned_files(
 def run_batch_verification(
     project_path: Path,
     llm_tool: str = "claude",
-    min_confidence: int = 70,
+    tiers: set[int] | None = None,
     timeout: int = 600,  # Longer timeout for full analysis
     include_orphaned: bool = False,
 ) -> VerificationResults:
@@ -196,7 +196,7 @@ def run_batch_verification(
     Args:
         project_path: Path to the project root
         llm_tool: Name of the LLM CLI tool to use
-        min_confidence: Minimum confidence threshold for verification
+        tiers: Set of priority tiers to verify (default: {PRIORITY_P0})
         timeout: Timeout in seconds for the LLM call
         include_orphaned: If True, include orphaned file items for LLM verification.
                          If False (default), auto-mark them as DELETE.
@@ -204,6 +204,9 @@ def run_batch_verification(
     Returns:
         VerificationResults with all verified items
     """
+    # Default to P0 if no tiers specified
+    selected_tiers = tiers if tiers is not None else {PRIORITY_P0}
+
     # Validate LLM tool is allowed (security check)
     _validate_llm_tool(llm_tool)
 
@@ -232,15 +235,21 @@ def run_batch_verification(
     )
     orphaned_item_count = sum(f["symbol_count"] for f in collapsed_orphan_files)
 
-    # Filter by confidence (only non-orphaned items go through this)
+    # Filter by selected tiers (only non-orphaned items go through this)
     if include_orphaned:
-        # Include everything above threshold
-        candidates = [d for d in dead_code if d.get("confidence", 0) >= min_confidence]
+        # Include everything in selected tiers
+        candidates = [
+            d for d in dead_code
+            if _assign_priority(d) in selected_tiers
+        ]
         auto_verified_orphans: list[VerifiedItem] = []
         collapsed_orphan_files = []  # Don't auto-verify, include in candidates
     else:
         # Skip orphaned items - auto-verify them as DELETE
-        candidates = [d for d in non_orphaned_items if d.get("confidence", 0) >= min_confidence]
+        candidates = [
+            d for d in non_orphaned_items
+            if _assign_priority(d) in selected_tiers
+        ]
         auto_verified_orphans = _auto_verify_orphans_from_collapsed(collapsed_orphan_files)
 
     # Sort candidates by priority (P0 first, then P1, P2)
@@ -252,13 +261,29 @@ def run_batch_verification(
         p = _assign_priority(item)
         priority_counts[p] = priority_counts.get(p, 0) + 1
 
-    skipped = [d for d in dead_code if d.get("confidence", 0) < min_confidence]
+    # Items not in selected tiers
+    skipped = [
+        d for d in non_orphaned_items
+        if _assign_priority(d) not in selected_tiers
+    ]
 
-    console.print(Panel.fit("[bold blue]OpenPrune - Oneshot Verification[/]"))
+    # Format selected tiers for display
+    tier_names = []
+    if PRIORITY_P0 in selected_tiers:
+        tier_names.append("P0")
+    if PRIORITY_P1 in selected_tiers:
+        tier_names.append("P1")
+    if PRIORITY_P2 in selected_tiers:
+        tier_names.append("P2")
+    if PRIORITY_P3 in selected_tiers:
+        tier_names.append("P3")
+    tiers_str = ", ".join(tier_names) if tier_names else "none"
+
+    console.print(Panel.fit("[bold blue]OpenPrune - Auto Verification[/]"))
     console.print(f"\n[dim]LLM:[/] {llm_tool}")
-    console.print(f"[dim]Min confidence:[/] {min_confidence}%")
+    console.print(f"[dim]Selected tiers:[/] {tiers_str}")
     console.print(f"[green]{len(candidates)}[/] items to verify (sorted by priority)")
-    console.print(f"[dim]{len(skipped)} items below threshold[/]")
+    console.print(f"[dim]{len(skipped)} items in other tiers (not selected)[/]")
 
     # Show priority breakdown
     if priority_counts:
@@ -279,13 +304,13 @@ def run_batch_verification(
     if not candidates:
         if auto_verified_orphans:
             console.print(f"\n[yellow]No items to verify via LLM. {len(auto_verified_orphans)} orphaned items auto-verified.[/]")
-            return _build_results(auto_verified_orphans, skipped, llm_tool, min_confidence)
+            return _build_results(auto_verified_orphans, skipped, llm_tool, tiers_str)
         console.print("\n[yellow]No items to verify.[/]")
-        return _build_empty_results(skipped, llm_tool, min_confidence)
+        return _build_empty_results(skipped, llm_tool, tiers_str)
 
     # Build comprehensive oneshot prompt
     console.print("\n[dim]Building prompt with file contents...[/]")
-    prompt = _build_oneshot_prompt(project_path, candidates, orphaned_files, min_confidence)
+    prompt = _build_oneshot_prompt(project_path, candidates, orphaned_files)
 
     # Execute single LLM call
     console.print(f"[dim]Sending to {llm_tool} (timeout: {timeout}s)...[/]\n")
@@ -302,7 +327,7 @@ def run_batch_verification(
     all_verified_items = auto_verified_orphans + verified_items
 
     # Build and save results
-    results = _build_results(all_verified_items, skipped, llm_tool, min_confidence)
+    results = _build_results(all_verified_items, skipped, llm_tool, tiers_str)
 
     output_path = get_verified_path(project_path)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -318,11 +343,10 @@ def _build_oneshot_prompt(
     project_path: Path,
     candidates: list[dict],
     orphaned_files: list[dict],
-    min_confidence: int,
 ) -> str:
     """Build a comprehensive prompt for single-session verification."""
     prompt_parts = [
-        build_system_prompt(project_path, min_confidence),
+        build_system_prompt(project_path),
         "\n---\n\n",
         "# Verification Session\n\n",
     ]
@@ -645,7 +669,7 @@ def _build_results(
     verified_items: list[VerifiedItem],
     skipped_items: list[dict],
     llm_tool: str,
-    min_confidence: int,
+    tiers: str,
 ) -> VerificationResults:
     """Build VerificationResults from verified items."""
     summary = VerificationSummary(
@@ -661,8 +685,8 @@ def _build_results(
         metadata={
             "verified_at": datetime.now().isoformat(),
             "llm_tool": llm_tool,
-            "min_confidence": min_confidence,
-            "mode": "oneshot",
+            "tiers": tiers,
+            "mode": "auto",
         },
         summary=summary,
         verified_items=verified_items,
@@ -673,7 +697,7 @@ def _build_results(
 def _build_empty_results(
     skipped_items: list[dict],
     llm_tool: str,
-    min_confidence: int,
+    tiers: str,
 ) -> VerificationResults:
     """Build empty results when nothing to verify."""
     return VerificationResults(
@@ -681,8 +705,8 @@ def _build_empty_results(
         metadata={
             "verified_at": datetime.now().isoformat(),
             "llm_tool": llm_tool,
-            "min_confidence": min_confidence,
-            "mode": "oneshot",
+            "tiers": tiers,
+            "mode": "auto",
         },
         summary=VerificationSummary(skipped_count=len(skipped_items)),
         skipped_items=skipped_items,

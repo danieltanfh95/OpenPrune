@@ -40,11 +40,15 @@ class TestBuildSystemPrompt:
 
         assert str(tmp_path) in result
 
-    def test_includes_min_confidence(self, tmp_path: Path):
-        """Should include min confidence threshold."""
-        result = build_system_prompt(tmp_path, min_confidence=80)
+    def test_includes_priority_tiers(self, tmp_path: Path):
+        """Should include priority tier descriptions."""
+        result = build_system_prompt(tmp_path)
 
-        assert "80" in result
+        # Check that tier information is included
+        assert "P0" in result
+        assert "P1" in result
+        assert "P2" in result
+        assert "P3" in result
 
     def test_includes_results_summary_when_exists(self, tmp_path: Path):
         """Should include results summary when results.json exists."""
@@ -130,7 +134,7 @@ class TestBuildOneshotPrompt:
             }
         ]
 
-        result = _build_oneshot_prompt(tmp_path, candidates, [], 70)
+        result = _build_oneshot_prompt(tmp_path, candidates, [])
 
         assert "module.func1" in result
         assert "func1" in result
@@ -142,7 +146,7 @@ class TestBuildOneshotPrompt:
             {"file": "deprecated.py", "symbols": 5, "lines": 100}
         ]
 
-        result = _build_oneshot_prompt(tmp_path, [], orphaned, 70)
+        result = _build_oneshot_prompt(tmp_path, [], orphaned)
 
         assert "Orphaned Files" in result
         assert "deprecated.py" in result
@@ -166,7 +170,7 @@ class TestBuildOneshotPrompt:
             }
         ]
 
-        result = _build_oneshot_prompt(tmp_path, candidates, [], 70)
+        result = _build_oneshot_prompt(tmp_path, candidates, [])
 
         assert "def func1():" in result
         assert "```python" in result
@@ -187,7 +191,7 @@ class TestBuildOneshotPrompt:
             }
         ]
 
-        result = _build_oneshot_prompt(tmp_path, candidates, [], 70)
+        result = _build_oneshot_prompt(tmp_path, candidates, [])
 
         # Line numbers should be present
         assert "   1 |" in result or "1 |" in result
@@ -202,7 +206,7 @@ class TestBuildOneshotPrompt:
             {"qualified_name": "e", "file": "e.py", "line": 1, "confidence": 90, "type": "import", "reasons": []},
         ]
 
-        result = _build_oneshot_prompt(tmp_path, candidates, [], 0)
+        result = _build_oneshot_prompt(tmp_path, candidates, [])
 
         assert "[ENTRYPOINT]" in result
         assert "[LOW - likely used]" in result
@@ -212,7 +216,7 @@ class TestBuildOneshotPrompt:
 
     def test_includes_task_instructions(self, tmp_path: Path):
         """Should include task instructions at the end."""
-        result = _build_oneshot_prompt(tmp_path, [], [], 70)
+        result = _build_oneshot_prompt(tmp_path, [], [])
 
         assert "Your Task" in result
         assert "DELETE" in result
@@ -373,11 +377,11 @@ class TestBuildResults:
 
     def test_includes_metadata(self):
         """Should include metadata."""
-        result = _build_results([], [], "claude", 80)
+        result = _build_results([], [], "claude", "P0, P1")
 
         assert result.metadata["llm_tool"] == "claude"
-        assert result.metadata["min_confidence"] == 80
-        assert result.metadata["mode"] == "oneshot"
+        assert result.metadata["tiers"] == "P0, P1"
+        assert result.metadata["mode"] == "auto"
 
 
 class TestBuildEmptyResults:
@@ -387,7 +391,7 @@ class TestBuildEmptyResults:
         """Should build empty results with skipped items."""
         skipped = [{"name": "a"}, {"name": "b"}]
 
-        result = _build_empty_results(skipped, "claude", 70)
+        result = _build_empty_results(skipped, "claude", "P0")
 
         assert len(result.verified_items) == 0
         assert result.summary.skipped_count == 2
@@ -395,10 +399,10 @@ class TestBuildEmptyResults:
 
     def test_metadata_present(self):
         """Should include metadata in empty results."""
-        result = _build_empty_results([], "kimi", 50)
+        result = _build_empty_results([], "kimi", "P0")
 
         assert result.metadata["llm_tool"] == "kimi"
-        assert result.metadata["min_confidence"] == 50
+        assert result.metadata["tiers"] == "P0"
 
 
 class TestVerificationModels:

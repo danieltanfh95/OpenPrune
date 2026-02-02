@@ -92,13 +92,12 @@ The user can ask you questions about specific items or request batch processing 
 """
 
 
-def build_system_prompt(project_path: Path, min_confidence: int = 70) -> str:
+def build_system_prompt(project_path: Path) -> str:
     """
     Build a system prompt with project-specific context.
 
     Args:
         project_path: Path to the project root
-        min_confidence: Minimum confidence threshold being used
 
     Returns:
         Complete system prompt string
@@ -111,7 +110,12 @@ def build_system_prompt(project_path: Path, min_confidence: int = 70) -> str:
 ## Project Context
 
 - **Project Path**: {project_path}
-- **Min Confidence Threshold**: {min_confidence}%
+
+### Priority Tiers
+- **P0** (50-79% conf): Medium confidence, highest LLM value - needs careful review
+- **P1** (80-99% conf, non-import): High confidence non-imports
+- **P2** (80-99% conf, import): High confidence imports - usually true positives
+- **P3** (100% conf): Auto-delete candidates
 """)
 
     # Check if results.json exists and add summary
@@ -149,7 +153,7 @@ Then read the actual source files to verify each item.
     return "\n".join(prompt_parts)
 
 
-def build_combined_prompt(project_path: Path, min_confidence: int = 70) -> str:
+def build_combined_prompt(project_path: Path) -> str:
     """
     Build a combined system+initial prompt for LLMs without system prompt support.
 
@@ -158,12 +162,11 @@ def build_combined_prompt(project_path: Path, min_confidence: int = 70) -> str:
 
     Args:
         project_path: Path to the project root
-        min_confidence: Minimum confidence threshold being used
 
     Returns:
         Combined prompt string with context and initial task
     """
-    system_prompt = build_system_prompt(project_path, min_confidence)
+    system_prompt = build_system_prompt(project_path)
 
     initial_task = """Start the dead code verification session.
 
