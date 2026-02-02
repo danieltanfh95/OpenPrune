@@ -42,6 +42,7 @@ class FlaskRestPlusPlugin:
         return [
             "flask_restplus",
             "flask_restx",
+            "flask_restful",
         ]
 
     @property

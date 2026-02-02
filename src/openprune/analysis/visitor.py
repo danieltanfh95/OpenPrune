@@ -188,6 +188,13 @@ class DeadCodeVisitor(ast.NodeVisitor):
         self.visit_FunctionDef(node)  # type: ignore
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # Extract parent class names
+        parent_classes = []
+        for base in node.bases:
+            base_name = self._get_base_name(base)
+            if base_name:
+                parent_classes.append(base_name)
+
         qname = self._qualified_name(node.name)
         symbol = Symbol(
             name=node.name,
@@ -196,6 +203,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
             location=self._make_location(node),
             scope=self.current_scope.qualified_name,
             decorators=self._get_decorators(node),
+            parent_classes=parent_classes,
         )
         self.definitions[qname] = symbol
 
@@ -461,6 +469,23 @@ class DeadCodeVisitor(ast.NodeVisitor):
                 return attr
             case _:
                 return None
+
+    def _get_base_name(self, node: ast.expr) -> str:
+        """Extract full base class name from AST node."""
+        match node:
+            case ast.Name(id=name):
+                return name
+            case ast.Attribute():
+                # Build full dotted name for things like db.Model
+                parts: list[str] = []
+                current: ast.expr = node
+                while isinstance(current, ast.Attribute):
+                    parts.append(current.attr)
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    parts.append(current.id)
+                return ".".join(reversed(parts))
+        return ""
 
 
 def analyze_file(file_path: Path, module_name: str | None = None) -> FileAnalysisResult:

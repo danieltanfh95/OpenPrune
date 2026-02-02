@@ -63,6 +63,7 @@ class Symbol:
     is_entrypoint: bool = False
     is_dunder: bool = False  # __name__, __init__, etc.
     is_private: bool = False  # _private or __private
+    parent_classes: list[str] = field(default_factory=list)  # For class inheritance tracking
 
 
 @dataclass

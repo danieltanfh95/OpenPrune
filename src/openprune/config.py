@@ -33,6 +33,7 @@ def get_analysis_excludes(config: dict) -> list[str]:
             "**/*_test.py",
             "**/conftest.py",
             "**/migrations/**",
+            "**/alembic/**",
             "**/.venv/**",
             "**/venv/**",
         ],

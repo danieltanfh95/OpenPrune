@@ -177,6 +177,18 @@ class SuspicionScorer:
             confidence += self.config.dunder_penalty
             reasons.append(f"Dunder/implicit method: {self.config.dunder_penalty}")
 
+        # Check plugin-based implicit names
+        from openprune.plugins import get_registry
+
+        registry = get_registry()
+        for plugin in registry.all_plugins():
+            if plugin.is_implicit_name(
+                symbol.name, symbol.parent_classes, symbol.decorators
+            ):
+                confidence += -40  # Same penalty as implicit names
+                reasons.append(f"Implicit name detected by {plugin.name} plugin: -40")
+                break  # Only apply once
+
         # Private symbols are often unused but intentional
         if symbol.is_private and not symbol.is_dunder:
             confidence += self.config.private_penalty
