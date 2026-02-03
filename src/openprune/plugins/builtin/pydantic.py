@@ -113,16 +113,18 @@ class PydanticPlugin:
         tree: ast.AST,
         file_path: Path,
     ) -> list[DetectedEntrypoint]:
-        """Detect Pydantic BaseModel classes.
+        """Pydantic models are NOT marked as entrypoints.
 
-        Note: We mark BaseModel subclasses as entrypoints because they're used
-        via type composition - nested Pydantic models reference each other
-        through type annotations, and the outer model uses inner models at
-        validation time even if not explicitly instantiated in code.
+        Previously we marked BaseModel subclasses as entrypoints, but this
+        prevented detecting truly unused Pydantic models. Instead:
+        - TYPE_HINT tracking captures nested model composition (user: UserModel)
+        - CALL tracking captures direct instantiation (User())
+        - IMPORT tracking captures imports from other modules
+
+        Used models will have their confidence reduced by name_used_penalty.
+        Unused models will be flagged as dead code (which is correct).
         """
-        visitor = _PydanticVisitor(file_path)
-        visitor.visit(tree)
-        return visitor.entrypoints
+        return []
 
     def is_implicit_name(
         self,

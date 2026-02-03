@@ -265,8 +265,17 @@ class SuspicionScorer:
             has_orm_usage = self._check_model_orm_usages(
                 symbol, orm_usages, model_table_mapping
             )
-            if not has_orm_usage:
-                # Model has no ORM usages - increase confidence it's dead
+            # Include ORM usages in "any usage" check since ORM patterns
+            # are tracked separately from general usages
+            has_any_usage = symbol.name in used_names or has_orm_usage
+
+            if not has_any_usage:
+                # Model is completely unused - override entrypoint protection
+                # This +40 counteracts the -40 from is_entrypoint marking
+                confidence += 40
+                reasons.append("SQLAlchemy Model with no usages: +40")
+            elif not has_orm_usage:
+                # Model is used somewhere but not via ORM patterns
                 confidence += 30
                 reasons.append("SQLAlchemy Model with no ORM usages: +30")
             else:

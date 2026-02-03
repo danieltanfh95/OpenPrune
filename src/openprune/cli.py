@@ -676,16 +676,19 @@ def run_pipeline(
     # Run verification
     if interactive:
         # Interactive mode: exec into LLM CLI session
+        # Convert min_confidence to tiers
+        selected_tiers = _confidence_to_tiers(min_confidence)
+
         console.print(Panel.fit("[bold blue]OpenPrune - LLM Verification[/]"))
         console.print(f"\n[dim]Using LLM:[/] {llm}")
-        console.print(f"[dim]Min confidence:[/] {min_confidence}%")
+        console.print(f"[dim]Selected tiers:[/] {_format_tiers(selected_tiers)}")
         console.print(f"[dim]Working directory:[/] {path}")
         console.print("[dim]The LLM has access to .openprune/ files[/]\n")
 
         from openprune.verification.session import launch_llm_session
 
         try:
-            launch_llm_session(path, llm, min_confidence)
+            launch_llm_session(path, llm, tiers=selected_tiers)
         except RuntimeError as e:
             console.print(f"[red]Verification error:[/] {e}")
     else:

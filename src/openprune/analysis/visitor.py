@@ -84,6 +84,11 @@ class DeadCodeVisitor(ast.NodeVisitor):
         self.local_names: set[str] = set()
         self.local_names_stack: list[set[str]] = []
 
+        # For tracking current class's parent_classes (inheritance chain)
+        # This allows methods to know what class they're defined in
+        self.current_class_parents: list[str] = []
+        self.class_parents_stack: list[list[str]] = []
+
     @property
     def current_scope(self) -> ScopeInfo:
         return self.scope_stack[-1]
@@ -150,6 +155,9 @@ class DeadCodeVisitor(ast.NodeVisitor):
             is_dunder=node.name.startswith("__") and node.name.endswith("__"),
             is_private=node.name.startswith("_") and not node.name.startswith("__"),
             parent_scope_type=self.current_scope.type,
+            # For methods, inherit the containing class's parent_classes
+            # This enables is_implicit_name() to detect Pydantic validators, etc.
+            parent_classes=self.current_class_parents if is_method else [],
         )
         self.definitions[qname] = symbol
 
@@ -218,12 +226,19 @@ class DeadCodeVisitor(ast.NodeVisitor):
             self._record_usage(base, UsageContext.INHERITANCE)
 
         # Visit class body in new scope
+        # Save and set class parent_classes so methods can access them
+        self.class_parents_stack.append(self.current_class_parents)
+        self.current_class_parents = parent_classes
+
         self._push_scope(node.name, "class")
 
         for stmt in node.body:
             self.visit(stmt)
 
         self._pop_scope()
+
+        # Restore previous class parent_classes
+        self.current_class_parents = self.class_parents_stack.pop()
 
     def visit_Assign(self, node: ast.Assign) -> None:
         """Track variable assignments."""

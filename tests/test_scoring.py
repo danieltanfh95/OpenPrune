@@ -560,8 +560,11 @@ class TestSQLAlchemyModelScoring:
     from the SQLAlchemy plugin, which is added to the ORM scoring adjustments.
     """
 
-    def test_model_with_no_orm_usages_gets_penalty(self):
-        """SQLAlchemy model with no ORM usages should get +30 confidence."""
+    def test_model_with_no_usages_gets_high_penalty(self):
+        """SQLAlchemy model with no usages at all should get +40 confidence.
+
+        This overrides the entrypoint protection for truly unused models.
+        """
         scorer = SuspicionScorer()
         symbol = Symbol(
             name="UnusedModel",
@@ -573,13 +576,35 @@ class TestSQLAlchemyModelScoring:
         )
         node = make_node(symbol)
 
-        # No ORM usages
+        # No usages at all (neither in used_names nor ORM)
         confidence, reasons = scorer.score(
             node, set(), None, orm_usages=set(), model_table_mapping={}
         )
 
-        # 60 (base) - 40 (implicit name from plugin) + 30 (no ORM usages) = 50
-        assert confidence == 50
+        # 60 (base) - 40 (implicit name from plugin) + 40 (no usages) = 60
+        assert confidence == 60
+        assert any("no usages" in r for r in reasons)
+
+    def test_model_with_usages_but_no_orm_gets_penalty(self):
+        """SQLAlchemy model used somewhere but not via ORM gets +30 confidence."""
+        scorer = SuspicionScorer()
+        symbol = Symbol(
+            name="UsedModel",
+            qualified_name="models.UsedModel",
+            type=SymbolType.CLASS,
+            location=Location(file=Path("models.py"), line=1, column=0),
+            scope="module",
+            parent_classes=["db.Model"],  # SQLAlchemy model
+        )
+        node = make_node(symbol)
+
+        # Model is used somewhere (e.g., in type hints) but not via ORM
+        confidence, reasons = scorer.score(
+            node, {"UsedModel"}, None, orm_usages=set(), model_table_mapping={}
+        )
+
+        # 60 (base) - 40 (implicit) - 40 (name in usages) + 30 (no ORM) = 10
+        assert confidence == 10
         assert any("no ORM usages" in r for r in reasons)
 
     def test_model_with_orm_usages_gets_reduction(self):
