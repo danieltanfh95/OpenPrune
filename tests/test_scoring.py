@@ -239,21 +239,22 @@ class TestSuspicionScorerPenalties:
 
         confidence, reasons = scorer.score(node, set())
 
-        # 60 (base) + (-20) (decorator) = 40
-        assert confidence == 40
-        assert any("Has entrypoint decorator" in r for r in reasons)
+        # 60 (base) + (-40) (Flask plugin route decorator) = 20
+        # Flask plugin applies -40 for route decorators (takes precedence over generic -20)
+        assert confidence == 20
+        assert any("Flask route decorator" in r for r in reasons)
 
     def test_multiple_decorator_penalties_single(self):
         """Should only apply decorator penalty once per decorator."""
         scorer = SuspicionScorer()
-        # "route" matches the entrypoint decorator pattern
+        # "route" matches the Flask plugin decorator pattern
         symbol = make_symbol("index", decorators=["@app.route('/home')"])
         node = make_node(symbol)
 
         confidence, reasons = scorer.score(node, set())
 
-        # Should apply penalty for route decorator
-        assert confidence == 40
+        # 60 (base) + (-40) (Flask plugin route decorator) = 20
+        assert confidence == 20
 
     def test_test_function_penalty(self):
         """Should apply penalty for test functions."""
@@ -405,8 +406,9 @@ class TestSuspicionScorerEntrypointDecorators:
 
         confidence, reasons = scorer.score(node, set())
 
-        assert confidence == 40
-        assert any("route" in r for r in reasons)
+        # 60 (base) + (-40) (Flask plugin route decorator) = 20
+        assert confidence == 20
+        assert any("route" in r.lower() for r in reasons)
 
     def test_task_decorator(self):
         """Should recognize task as entrypoint decorator."""
@@ -416,7 +418,8 @@ class TestSuspicionScorerEntrypointDecorators:
 
         confidence, reasons = scorer.score(node, set())
 
-        assert confidence == 40
+        # 60 (base) + (-40) (Celery plugin task decorator) = 20
+        assert confidence == 20
 
     def test_pytest_fixture_decorator(self):
         """Should recognize pytest.fixture as entrypoint decorator."""
@@ -426,7 +429,8 @@ class TestSuspicionScorerEntrypointDecorators:
 
         confidence, reasons = scorer.score(node, set())
 
-        assert confidence == 40
+        # 60 (base) + (-40) (Pytest plugin fixture decorator) = 20
+        assert confidence == 20
 
     def test_property_decorator(self):
         """Should recognize property as entrypoint decorator."""

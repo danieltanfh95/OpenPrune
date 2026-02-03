@@ -84,11 +84,39 @@ class FlaskPlugin:
     @property
     def decorator_scoring_rules(self) -> list[DecoratorScoringRule]:
         return [
+            # Route decorators
             DecoratorScoringRule(
                 pattern="route",
                 score_adjustment=-40,
                 description="Flask route decorator",
             ),
+            # HTTP method decorators (Flask 2.0+)
+            DecoratorScoringRule(
+                pattern=".get",
+                score_adjustment=-40,
+                description="Flask GET method decorator",
+            ),
+            DecoratorScoringRule(
+                pattern=".post",
+                score_adjustment=-40,
+                description="Flask POST method decorator",
+            ),
+            DecoratorScoringRule(
+                pattern=".put",
+                score_adjustment=-40,
+                description="Flask PUT method decorator",
+            ),
+            DecoratorScoringRule(
+                pattern=".delete",
+                score_adjustment=-40,
+                description="Flask DELETE method decorator",
+            ),
+            DecoratorScoringRule(
+                pattern=".patch",
+                score_adjustment=-40,
+                description="Flask PATCH method decorator",
+            ),
+            # Hook decorators
             DecoratorScoringRule(
                 pattern="before_request",
                 score_adjustment=-40,
@@ -99,6 +127,27 @@ class FlaskPlugin:
                 score_adjustment=-40,
                 description="Flask after_request hook",
             ),
+            DecoratorScoringRule(
+                pattern="teardown_request",
+                score_adjustment=-40,
+                description="Flask teardown_request hook",
+            ),
+            DecoratorScoringRule(
+                pattern="before_first_request",
+                score_adjustment=-40,
+                description="Flask before_first_request hook",
+            ),
+            DecoratorScoringRule(
+                pattern="context_processor",
+                score_adjustment=-40,
+                description="Flask context_processor",
+            ),
+            DecoratorScoringRule(
+                pattern="shell_context_processor",
+                score_adjustment=-40,
+                description="Flask shell_context_processor",
+            ),
+            # Error handlers
             DecoratorScoringRule(
                 pattern="errorhandler",
                 score_adjustment=-40,

@@ -58,6 +58,21 @@ class PytestPlugin:
                 score_adjustment=-40,
                 description="Pytest fixture",
             ),
+            DecoratorScoringRule(
+                pattern="pytest.mark.parametrize",
+                score_adjustment=-30,
+                description="Pytest parametrized test",
+            ),
+            DecoratorScoringRule(
+                pattern="pytest.hookimpl",
+                score_adjustment=-40,
+                description="Pytest hook implementation",
+            ),
+            DecoratorScoringRule(
+                pattern="pytest.mark.asyncio",
+                score_adjustment=-30,
+                description="Pytest async test marker",
+            ),
         ]
 
     def detect_entrypoints(

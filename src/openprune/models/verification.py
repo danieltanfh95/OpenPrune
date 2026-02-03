@@ -33,6 +33,10 @@ class VerifiedItem:
     verdict: LLMVerdict = LLMVerdict.UNCERTAIN
     llm_reasoning: str = ""
     verified_at: datetime | None = None
+    # For KEEP verdicts: categorizes the false positive pattern for improvement tracking
+    # e.g., "framework_instance", "decorator_implicit", "dynamic_dispatch", "signal_handler",
+    #       "registry_pattern", "inheritance", "public_api"
+    false_positive_pattern: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -49,6 +53,7 @@ class VerifiedItem:
             "verdict": self.verdict.value,
             "llm_reasoning": self.llm_reasoning,
             "verified_at": self.verified_at.isoformat() if self.verified_at else None,
+            "false_positive_pattern": self.false_positive_pattern,
         }
 
     @classmethod
@@ -71,6 +76,7 @@ class VerifiedItem:
                 if data.get("verified_at")
                 else None
             ),
+            false_positive_pattern=data.get("false_positive_pattern"),
         )
 
 

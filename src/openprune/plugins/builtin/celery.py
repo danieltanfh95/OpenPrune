@@ -99,6 +99,11 @@ class CeleryPlugin:
                 description="Celery shared_task decorator",
             ),
             DecoratorScoringRule(
+                pattern="periodic_task",
+                score_adjustment=-40,
+                description="Celery periodic_task decorator (legacy)",
+            ),
+            DecoratorScoringRule(
                 pattern=".connect",
                 score_adjustment=-40,
                 description="Celery signal handler",

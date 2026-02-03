@@ -114,7 +114,13 @@ class FlaskRestPlusPlugin:
 
         # Check if any parent class is a Resource
         for parent in parent_classes:
+            # Direct match
             if parent in RESOURCE_BASES or parent.endswith(".Resource"):
+                return True
+            # Handle indirect inheritance: BaseResource, MyResource, etc.
+            # Any class ending in "Resource" is likely a Resource subclass
+            parent_lower = parent.lower()
+            if parent_lower.endswith("resource") or "resource" in parent_lower:
                 return True
 
         return False

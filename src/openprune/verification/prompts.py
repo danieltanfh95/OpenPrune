@@ -152,11 +152,38 @@ When writing to `.openprune/verified.json`, use this structure:
       "original_confidence": 95,
       "reasons": ["No references found"],
       "verdict": "delete",
-      "llm_reasoning": "Function has no callers and appears to be legacy code."
+      "llm_reasoning": "Function has no callers and appears to be legacy code.",
+      "false_positive_pattern": null
     }
   ]
 }
 ```
+
+## False Positive Patterns (IMPORTANT for KEEP verdicts)
+
+**For KEEP verdicts only**, specify the `false_positive_pattern` to help improve OpenPrune's detection. Use one of these categories:
+
+| Pattern | Description | Examples |
+|---------|-------------|----------|
+| `framework_instance` | Framework objects used implicitly | Flask app, Celery instance, db session |
+| `decorator_implicit` | Decorator-based implicit usage | @validator, @fixture, @route not detected |
+| `dynamic_dispatch` | Dynamic/reflection usage | getattr(), importlib, string-based lookup |
+| `signal_handler` | Signal/event connection | signal.connect(), @receiver |
+| `registry_pattern` | Dict/list registration | HANDLERS['key'] = func, plugin systems |
+| `inheritance` | Base class calls child method | Template pattern, abstract methods |
+| `public_api` | Exported public interface | __all__, documented API, external callers |
+| `test_infrastructure` | Test fixtures and helpers | conftest.py fixtures, test utilities |
+
+**Example KEEP verdict with pattern:**
+```json
+{
+  "verdict": "keep",
+  "llm_reasoning": "This is a Pydantic validator called implicitly by model validation",
+  "false_positive_pattern": "decorator_implicit"
+}
+```
+
+This feedback helps improve OpenPrune's scoring rules to reduce future false positives.
 
 ## Completion Requirement
 

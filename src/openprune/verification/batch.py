@@ -447,11 +447,22 @@ Return a JSON array with your verdicts. Include ALL items from the list above.
     {
       "qualified_name": "app.index",
       "verdict": "KEEP",
-      "reasoning": "Flask route entrypoint, will be called by web requests"
+      "reasoning": "Flask route entrypoint, will be called by web requests",
+      "false_positive_pattern": "decorator_implicit"
     }
   ]
 }
 ```
+
+**For KEEP verdicts**, include `false_positive_pattern` to help improve detection. Use one of:
+- `framework_instance` - Flask app, Celery instance, db session
+- `decorator_implicit` - @validator, @fixture, @route not detected
+- `dynamic_dispatch` - getattr(), importlib, string lookup
+- `signal_handler` - signal.connect(), @receiver
+- `registry_pattern` - HANDLERS['key'] = func, plugin systems
+- `inheritance` - Base class calls child method
+- `public_api` - __all__, documented API
+- `test_infrastructure` - Test fixtures and helpers
 
 Now analyze all items and return the complete JSON:
 """)
@@ -520,6 +531,7 @@ def _parse_oneshot_response(
                 qname = item_data.get("qualified_name", "")
                 verdict_str = item_data.get("verdict", "UNCERTAIN").upper()
                 reasoning = item_data.get("reasoning", item_data.get("llm_reasoning", ""))
+                fp_pattern = item_data.get("false_positive_pattern")
 
                 # Map to original candidate
                 original = candidate_lookup.get(qname, {})
@@ -543,6 +555,7 @@ def _parse_oneshot_response(
                         verdict=verdict,
                         llm_reasoning=reasoning,
                         verified_at=datetime.now(),
+                        false_positive_pattern=fp_pattern,
                     )
                 )
 

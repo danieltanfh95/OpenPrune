@@ -149,6 +149,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
             decorators=decorators,
             is_dunder=node.name.startswith("__") and node.name.endswith("__"),
             is_private=node.name.startswith("_") and not node.name.startswith("__"),
+            parent_scope_type=self.current_scope.type,
         )
         self.definitions[qname] = symbol
 
@@ -204,6 +205,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
             scope=self.current_scope.qualified_name,
             decorators=self._get_decorators(node),
             parent_classes=parent_classes,
+            parent_scope_type=self.current_scope.type,
         )
         self.definitions[qname] = symbol
 
@@ -227,6 +229,11 @@ class DeadCodeVisitor(ast.NodeVisitor):
         """Track variable assignments."""
         for target in node.targets:
             self._record_assignment(target)
+
+            # Track registry patterns: HANDLERS['key'] = func
+            # When assigning to a dict subscript, record the value as used
+            if isinstance(target, ast.Subscript) and isinstance(node.value, ast.Name):
+                self._record_usage(node.value, UsageContext.REFERENCE)
 
         # Visit the value for usages
         self.visit(node.value)
@@ -320,6 +327,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
                         type=sym_type,
                         location=self._make_location(target),
                         scope=self.current_scope.qualified_name,
+                        parent_scope_type=self.current_scope.type,
                     )
                 else:
                     self.local_names.add(name)
@@ -353,6 +361,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
                 type=SymbolType.IMPORT,
                 location=self._make_location(node),
                 scope=self.current_scope.qualified_name,
+                parent_scope_type=self.current_scope.type,
             )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -381,6 +390,7 @@ class DeadCodeVisitor(ast.NodeVisitor):
                 type=SymbolType.IMPORT,
                 location=self._make_location(node),
                 scope=self.current_scope.qualified_name,
+                parent_scope_type=self.current_scope.type,
             )
 
     # === Usage Visitors ===
@@ -418,6 +428,14 @@ class DeadCodeVisitor(ast.NodeVisitor):
                             caller=self._get_current_caller(),
                         )
                     )
+
+        # Handle signal.connect(handler) patterns (Blinker, Flask signals)
+        # This catches signal.connect(func) where func appears unused
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr in ("connect", "connect_via"):
+                for arg in node.args:
+                    if isinstance(arg, ast.Name):
+                        self._record_usage(arg, UsageContext.REFERENCE)
 
         # Check for SQLAlchemy ORM patterns
         self._check_sqlalchemy_patterns(node)

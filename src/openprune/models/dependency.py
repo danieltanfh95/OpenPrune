@@ -65,6 +65,7 @@ class Symbol:
     is_dunder: bool = False  # __name__, __init__, etc.
     is_private: bool = False  # _private or __private
     parent_classes: list[str] = field(default_factory=list)  # For class inheritance tracking
+    parent_scope_type: str | None = None  # "module", "class", or "function"
 
 
 @dataclass

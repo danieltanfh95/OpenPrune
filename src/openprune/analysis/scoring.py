@@ -197,6 +197,34 @@ class SuspicionScorer:
                 reasons.append(f"Implicit name detected by {plugin.name} plugin: -40")
                 break  # Only apply once
 
+        # Apply plugin decorator scoring rules
+        plugin_decorator_matched = False
+        for plugin in registry.all_plugins():
+            for rule in plugin.decorator_scoring_rules:
+                for dec in symbol.decorators:
+                    # Match if pattern is substring or fnmatch-style wildcard
+                    if rule.pattern in dec or (
+                        "*" in rule.pattern and self._fnmatch(dec, rule.pattern)
+                    ):
+                        confidence += rule.score_adjustment
+                        reasons.append(f"{rule.description}: {rule.score_adjustment}")
+                        plugin_decorator_matched = True
+                        break  # Only apply each rule once per symbol
+
+        # Decorator inner functions (wrapper, inner, decorated, etc.)
+        # These are nested functions inside decorators that are returned/used implicitly
+        decorator_wrapper_names = {
+            "wrapper", "inner", "decorated", "decorator", "_wrapper", "_inner",
+            "wrapped", "_decorated", "new_func", "newfunc", "new_function",
+        }
+        if (
+            symbol.name in decorator_wrapper_names
+            and symbol.type == SymbolType.FUNCTION
+            and symbol.parent_scope_type == "function"
+        ):
+            confidence += -30
+            reasons.append("Likely decorator wrapper function: -30")
+
         # Private symbols are often unused but intentional
         if symbol.is_private and not symbol.is_dunder:
             confidence += self.config.private_penalty
@@ -207,15 +235,16 @@ class SuspicionScorer:
             confidence += self.config.entrypoint_penalty
             reasons.append(f"Marked as entrypoint: {self.config.entrypoint_penalty}")
 
-        # Check for entrypoint-like decorators
-        for dec in symbol.decorators:
-            for pattern in self.entrypoint_decorators:
-                if pattern in dec.lower():
-                    confidence += self.config.decorator_penalty
-                    reasons.append(
-                        f"Has entrypoint decorator '{dec}': {self.config.decorator_penalty}"
-                    )
-                    break
+        # Check for entrypoint-like decorators (only if no plugin rule matched)
+        if not plugin_decorator_matched:
+            for dec in symbol.decorators:
+                for pattern in self.entrypoint_decorators:
+                    if pattern in dec.lower():
+                        confidence += self.config.decorator_penalty
+                        reasons.append(
+                            f"Has entrypoint decorator '{dec}': {self.config.decorator_penalty}"
+                        )
+                        break
 
         # Names that look like test functions
         if symbol.name.startswith("test_") or symbol.name.endswith("_test"):
@@ -273,6 +302,12 @@ class SuspicionScorer:
                 f"File not modified in {int(months)} months: +{self.config.stale_file_bonus}",
             )
         return 0, ""
+
+    def _fnmatch(self, name: str, pattern: str) -> bool:
+        """Simple fnmatch-style matching for decorator patterns."""
+        import fnmatch
+
+        return fnmatch.fnmatch(name, pattern)
 
     def _is_sqlalchemy_model(self, symbol) -> bool:
         """Check if symbol is a SQLAlchemy Model class."""
