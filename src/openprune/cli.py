@@ -56,6 +56,33 @@ app = typer.Typer(
 )
 console = Console()
 
+# Test file patterns - only match actual test files, not fixtures
+TEST_FILE_PATTERNS = {"_test.py", "_tests.py", "conftest.py"}
+
+
+def _is_test_file(file_path: Path) -> bool:
+    """
+    Check if a file is an actual test file (not fixture/sample code).
+
+    Only matches:
+    - test_*.py files
+    - *_test.py files
+    - conftest.py files
+
+    Does NOT match entire test directories to avoid catching fixture code.
+    """
+    name = file_path.name.lower()
+
+    # Check file name patterns
+    if name.startswith("test_"):
+        return True
+
+    for pattern in TEST_FILE_PATTERNS:
+        if name.endswith(pattern):
+            return True
+
+    return False
+
 
 def version_callback(value: bool) -> None:
     if value:
@@ -755,6 +782,7 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     all_usages: set[str] = set()
     all_usages_list: list[Usage] = []  # For call graph
     orm_usages: set[str] = set()  # SQLAlchemy ORM-specific usages
+    file_usages: dict[Path, set[str]] = {}  # Per-file usages for import scoring
     file_results: dict[Path, FileAnalysisResult] = {}
     noqa_skipped: list[NoqaSkipped] = []
 
@@ -800,12 +828,15 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
                 all_definitions[qname] = symbol
 
             # Collect usages
+            file_usage_names: set[str] = set()
             for usage in result.usages:
                 all_usages.add(usage.symbol_name)
                 all_usages_list.append(usage)
+                file_usage_names.add(usage.symbol_name)
                 # Track ORM-specific usages for SQLAlchemy model scoring
                 if usage.context == UsageContext.ORM_REFERENCE:
                     orm_usages.add(usage.symbol_name)
+            file_usages[py_file] = file_usage_names
 
             progress.update(parse_task, advance=1)
 
@@ -924,20 +955,41 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
 
         # Score the node
         confidence, reasons = scorer.score(
-            node, all_usages, file_age_info, orm_usages, model_table_mapping
+            node, all_usages, file_age_info, orm_usages, model_table_mapping, file_usages
         )
 
         # Check module-level reachability (using full module path)
         module_name = resolver._path_to_module(symbol.location.file)
+
+        # Check if symbol is used in the same file or globally
+        # If so, don't penalize for reachability (the usage detection is more reliable)
+        symbol_has_usages = symbol.name in all_usages
+        import_used_in_file = (
+            symbol.type == SymbolType.IMPORT
+            and symbol.name in file_usages.get(symbol.location.file, set())
+        )
+        # Skip reachability penalty if symbol has detected usages
+        skip_reachability_penalty = symbol_has_usages or import_used_in_file
+
+        # Skip orphan penalty for test files (pytest discovers them separately)
+        is_test = _is_test_file(symbol.location.file)
+
         if module_name and module_name in orphaned_modules:
             # Entire file is orphaned - very high confidence
-            confidence = 100
-            reasons = ["Entire file is unreachable from any entrypoint"]
+            # But skip for test files (pytest discovery) and symbols with detected usages
+            if skip_reachability_penalty or is_test:
+                # Symbol has usages or is in test file, don't mark as orphaned
+                pass
+            else:
+                confidence = 100
+                reasons = ["Entire file is unreachable from any entrypoint"]
         elif qname not in reachable_symbols and entrypoint_qnames:
             # Symbol is in a reachable file but not called from entrypoints
-            confidence = min(confidence + 30, 100)
-            if "Not reachable from any entrypoint" not in reasons:
-                reasons.append("Not reachable from any entrypoint")
+            # Skip penalty for test files (pytest discovery) and symbols with detected usages
+            if not skip_reachability_penalty and not is_test:
+                confidence = min(confidence + 30, 100)
+                if "Not reachable from any entrypoint" not in reasons:
+                    reasons.append("Not reachable from any entrypoint")
         elif qname in reachable_symbols:
             # Symbol is reachable - lower confidence
             confidence = max(confidence - 20, 0)
@@ -963,9 +1015,12 @@ def _run_analysis(path: Path, config: dict, include_ignored: bool = False) -> An
     # Sort by confidence (highest first)
     dead_code.sort(key=lambda x: x.confidence, reverse=True)
 
-    # Build orphaned files list
+    # Build orphaned files list (exclude test files)
     orphaned_file_list: list[OrphanedFile] = []
     for py_file in py_files:
+        # Skip test files - they're discovered separately by pytest
+        if _is_test_file(py_file):
+            continue
         file_module_name = resolver._path_to_module(py_file)
         if file_module_name and file_module_name in orphaned_modules:
             result = file_results.get(py_file)

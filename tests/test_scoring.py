@@ -54,7 +54,7 @@ class TestScoringConfig:
         assert config.base_confidence[SymbolType.METHOD] == 60
         assert config.base_confidence[SymbolType.CLASS] == 60
         assert config.base_confidence[SymbolType.VARIABLE] == 60
-        assert config.base_confidence[SymbolType.IMPORT] == 90
+        assert config.base_confidence[SymbolType.IMPORT] == 70  # Lowered to reduce false positives
         assert config.base_confidence[SymbolType.CONSTANT] == 70
         assert config.base_confidence[SymbolType.MODULE] == 80
 
@@ -83,9 +83,9 @@ class TestScoringConfig:
         config = ScoringConfig()
 
         assert config.stale_file_months == 6
-        assert config.stale_file_bonus == 10
+        assert config.stale_file_bonus == 5  # Reduced from 10 to lower false positives
         assert config.very_stale_file_months == 12
-        assert config.very_stale_file_bonus == 15
+        assert config.very_stale_file_bonus == 10  # Reduced from 15 to lower false positives
 
 
 class TestSuspicionScorerBasic:
@@ -103,14 +103,14 @@ class TestSuspicionScorerBasic:
         assert any("Base confidence" in r for r in reasons)
 
     def test_base_confidence_for_import(self):
-        """Imports should have higher base confidence (more likely unused)."""
+        """Imports should have moderate base confidence (lowered to reduce false positives)."""
         scorer = SuspicionScorer()
         symbol = make_symbol("os", SymbolType.IMPORT)
         node = make_node(symbol)
 
         confidence, reasons = scorer.score(node, set())
 
-        assert confidence == 90
+        assert confidence == 70  # Lowered from 90 to reduce false positives
 
     def test_base_confidence_for_class(self):
         """Classes should have standard base confidence."""
@@ -239,13 +239,13 @@ class TestSuspicionScorerPenalties:
 
         confidence, reasons = scorer.score(node, set())
 
-        # 60 (base) + (-40) (Flask plugin route decorator) = 20
-        # Flask plugin applies -40 for route decorators (takes precedence over generic -20)
-        assert confidence == 20
-        assert any("Flask route decorator" in r for r in reasons)
+        # 60 (base) + (-40) (entrypoint decorator for 'route') + (-40) (Flask plugin route decorator) = -20, clamped to 0
+        # Both entrypoint_decorators and plugin rules now apply, reducing false positives
+        assert confidence == 0
+        assert any("Entrypoint decorator" in r or "Flask route decorator" in r for r in reasons)
 
     def test_multiple_decorator_penalties_single(self):
-        """Should only apply decorator penalty once per decorator."""
+        """Should apply decorator penalty for route decorator."""
         scorer = SuspicionScorer()
         # "route" matches the Flask plugin decorator pattern
         symbol = make_symbol("index", decorators=["@app.route('/home')"])
@@ -298,8 +298,8 @@ class TestSuspicionScorerFileAge:
 
         confidence, reasons = scorer.score(node, set(), file_age_info)
 
-        # 60 (base) + 10 (stale) = 70
-        assert confidence == 70
+        # 60 (base) + 5 (stale, reduced from 10) = 65
+        assert confidence == 65
         assert any("months" in r for r in reasons)
 
     def test_very_stale_file_bonus(self, tmp_path: Path):
@@ -317,8 +317,8 @@ class TestSuspicionScorerFileAge:
 
         confidence, reasons = scorer.score(node, set(), file_age_info)
 
-        # 60 (base) + 15 (very stale) = 75
-        assert confidence == 75
+        # 60 (base) + 10 (very stale, reduced from 15) = 70
+        assert confidence == 70
 
     def test_recent_file_no_bonus(self, tmp_path: Path):
         """Should not add bonus for recent files."""
@@ -353,8 +353,8 @@ class TestSuspicionScorerFileAge:
 
         confidence, reasons = scorer.score(node, set(), file_age_info)
 
-        # Should handle tz-aware datetime and add stale bonus
-        assert confidence == 70
+        # Should handle tz-aware datetime and add stale bonus (5, reduced from 10)
+        assert confidence == 65
 
 
 class TestSuspicionScorerConfidenceClamping:
@@ -440,7 +440,8 @@ class TestSuspicionScorerEntrypointDecorators:
 
         confidence, reasons = scorer.score(node, set())
 
-        assert confidence == 40
+        # 60 (base) - 40 (entrypoint decorator) = 20
+        assert confidence == 20
 
     def test_abstractmethod_decorator(self):
         """Should recognize abstractmethod as entrypoint decorator."""
@@ -450,7 +451,8 @@ class TestSuspicionScorerEntrypointDecorators:
 
         confidence, reasons = scorer.score(node, set())
 
-        assert confidence == 40
+        # 60 (base) - 40 (entrypoint decorator) = 20
+        assert confidence == 20
 
 
 class TestCalculateUnreachableScore:

@@ -189,6 +189,14 @@ This feedback helps improve OpenPrune's scoring rules to reduce future false pos
 
 **IMPORTANT**: Work until ALL items are verified. Do not stop early or ask for permission to continue.
 
+**TIER ORDER**: Process items strictly in tier order:
+1. Complete ALL P0 items first (medium confidence, highest false positive risk)
+2. Then complete ALL P1 items (high confidence non-imports)
+3. Then complete ALL P2 items (high confidence imports)
+4. Finally P3 items if included
+
+Do NOT skip ahead to later tiers. Finish each tier completely before moving on.
+
 - Process every item in results.json that matches the selected tiers
 - Only stop when verified.json contains a verdict for every applicable item
 - If you encounter errors, fix them and continue

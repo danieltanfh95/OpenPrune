@@ -16,6 +16,29 @@ from openprune.models.dependency import (
 )
 
 
+# Framework factory functions that create instances used by decorators
+# e.g., app = Flask(__name__) -> @app.route() uses 'app'
+FRAMEWORK_FACTORIES = {
+    # Flask
+    "Flask",
+    "Blueprint",
+    # Celery
+    "Celery",
+    # FastAPI
+    "FastAPI",
+    "APIRouter",
+    # Flask-RESTX
+    "Api",
+    "Namespace",
+    # Common factory function names
+    "create_app",
+    "make_app",
+    "create_celery",
+    "make_celery",
+    "app_factory",
+}
+
+
 @dataclass
 class ScopeInfo:
     """Information about the current scope."""
@@ -117,6 +140,15 @@ class DeadCodeVisitor(ast.NodeVisitor):
             except Exception:
                 decorators.append("<unknown>")
         return decorators
+
+    def _get_call_name(self, node: ast.Call) -> str | None:
+        """Extract the function name from a Call node."""
+        match node.func:
+            case ast.Name(id=name):
+                return name
+            case ast.Attribute(attr=attr):
+                return attr
+        return None
 
     def _push_scope(self, name: str, scope_type: str) -> None:
         """Push a new scope onto the stack."""
@@ -249,6 +281,21 @@ class DeadCodeVisitor(ast.NodeVisitor):
             # When assigning to a dict subscript, record the value as used
             if isinstance(target, ast.Subscript) and isinstance(node.value, ast.Name):
                 self._record_usage(node.value, UsageContext.REFERENCE)
+
+            # Track framework factory patterns: app = Flask(__name__)
+            # These instances are implicitly used by decorators like @app.route()
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.Call):
+                factory_name = self._get_call_name(node.value)
+                if factory_name in FRAMEWORK_FACTORIES:
+                    # Record the variable as used since decorators will reference it
+                    self.usages.append(
+                        Usage(
+                            symbol_name=target.id,
+                            context=UsageContext.REFERENCE,
+                            location=self._make_location(target),
+                            caller=None,  # Module level
+                        )
+                    )
 
         # Visit the value for usages
         self.visit(node.value)
@@ -423,6 +470,11 @@ class DeadCodeVisitor(ast.NodeVisitor):
             self._record_usage(node, UsageContext.ATTRIBUTE)
             # Check for Model.query pattern (Flask-SQLAlchemy)
             self._check_model_query_pattern(node)
+            # Also record the base module/object as used
+            # This handles `functools.wraps`, `typing.Union`, etc.
+            if isinstance(node.value, ast.Name):
+                # Record the module name itself as used (e.g., 'functools' in functools.wraps)
+                self._record_usage(node.value, UsageContext.ATTRIBUTE)
         # Also visit the value (e.g., for x.y.z, visit x.y)
         self.visit(node.value)
 
@@ -451,6 +503,23 @@ class DeadCodeVisitor(ast.NodeVisitor):
                 for arg in node.args:
                     if isinstance(arg, ast.Name):
                         self._record_usage(arg, UsageContext.REFERENCE)
+
+            # Handle registry patterns: registry.register(func), handlers.append(func), etc.
+            # These patterns register functions/classes that may appear unused
+            if node.func.attr in ("register", "add", "append", "extend", "update", "include"):
+                for arg in node.args:
+                    if isinstance(arg, ast.Name):
+                        self._record_usage(arg, UsageContext.REFERENCE)
+                    elif isinstance(arg, ast.List):
+                        # handlers.extend([func1, func2])
+                        for elt in arg.elts:
+                            if isinstance(elt, ast.Name):
+                                self._record_usage(elt, UsageContext.REFERENCE)
+                    elif isinstance(arg, ast.Dict):
+                        # handlers.update({'key': func})
+                        for value in arg.values:
+                            if isinstance(value, ast.Name):
+                                self._record_usage(value, UsageContext.REFERENCE)
 
         # Check for SQLAlchemy ORM patterns
         self._check_sqlalchemy_patterns(node)

@@ -117,11 +117,18 @@ def _build_llm_command(
     # Initial prompt to kick off the verification session
     initial_prompt = f"""Start the dead code verification session.
 
-Read .openprune/results.json to see the dead code candidates, then help me review items in tiers: {tiers_str}.
+Read .openprune/results.json to see the dead code candidates for tiers: {tiers_str}.
 
-For each item, examine the source code and determine if it's truly dead (DELETE), a false positive (KEEP), or needs more investigation (UNCERTAIN).
+**IMPORTANT**: Process items strictly in tier order:
+1. Complete ALL P0 items first
+2. Then ALL P1 items
+3. Then ALL P2 items
 
-Let's begin - show me the highest priority items first."""
+Do NOT move to the next tier until the current tier is fully verified.
+
+For each item, examine the source code and determine: DELETE, KEEP, or UNCERTAIN.
+
+Let's begin with P0 items."""
 
     if llm_tool == "claude":
         # claude CLI supports --system-prompt, --allowedTools, and positional prompt

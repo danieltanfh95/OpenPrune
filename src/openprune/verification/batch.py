@@ -419,7 +419,13 @@ def _build_oneshot_prompt(
 
 ## Your Task
 
-Review ALL items listed above and provide verdicts.
+**PROCESS IN TIER ORDER**: Items are listed by priority. You MUST:
+1. Process ALL P0 items first (complete every P0 before any P1)
+2. Then ALL P1 items (complete every P1 before any P2)
+3. Then ALL P2 items
+4. Then P3 items if any
+
+Do NOT jump between tiers. Finish each tier completely before proceeding.
 
 **IMPORTANT REMINDERS**:
 1. **0% confidence = ENTRYPOINT** (Flask route, Celery task, etc.) - Usually **KEEP**

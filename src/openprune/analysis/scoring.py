@@ -23,11 +23,11 @@ class ScoringConfig:
     name_used_penalty: int = -40  # Name found in usages
     qualified_name_used_penalty: int = -20  # Qualified name found in usages
 
-    # File age adjustments
+    # File age adjustments (reduced to lower false positive rate)
     stale_file_months: int = 6  # Files not modified in this many months are more suspicious
-    stale_file_bonus: int = 10  # Bonus suspicion for stale files
+    stale_file_bonus: int = 5  # Bonus suspicion for stale files (reduced from 10)
     very_stale_file_months: int = 12  # Very old files
-    very_stale_file_bonus: int = 15  # Bonus for very stale files
+    very_stale_file_bonus: int = 10  # Bonus for very stale files (reduced from 15)
 
     def __post_init__(self) -> None:
         if not self.base_confidence:
@@ -36,7 +36,7 @@ class ScoringConfig:
                 SymbolType.METHOD: 60,
                 SymbolType.CLASS: 60,
                 SymbolType.VARIABLE: 60,
-                SymbolType.IMPORT: 90,
+                SymbolType.IMPORT: 70,  # Lowered from 90 to reduce false positives
                 SymbolType.CONSTANT: 70,
                 SymbolType.MODULE: 80,
             }
@@ -57,29 +57,60 @@ class SuspicionScorer:
 
         # Decorators that indicate a symbol is used externally
         self.entrypoint_decorators = {
+            # Flask/FastAPI routes
             "route",
             "get",
             "post",
             "put",
             "delete",
             "patch",
+            "head",
+            "options",
+            # Flask-RESTX
+            "expect",
+            "marshal",
+            "marshal_with",
+            "marshal_list_with",
+            "doc",
+            # Celery
             "task",
             "shared_task",
+            # CLI
             "command",
+            "argument",
+            "option",
+            # Testing
             "pytest.fixture",
             "fixture",
+            "parametrize",
+            # Class methods
             "property",
             "staticmethod",
             "classmethod",
             "abstractmethod",
             "override",
+            # Registration/signals
             "register",
             "receiver",
+            "connect",
+            "listens_for",
+            # Django
             "admin.register",
             "login_required",
             "permission_required",
             "api_view",
             "action",
+            # Pydantic
+            "validator",
+            "field_validator",
+            "model_validator",
+            "root_validator",
+            # Event handlers
+            "on_event",
+            "event_handler",
+            "before_request",
+            "after_request",
+            "errorhandler",
         }
 
         # Names that are implicitly used
@@ -145,6 +176,7 @@ class SuspicionScorer:
         file_age_info: dict[Path, datetime] | None = None,
         orm_usages: set[str] | None = None,
         model_table_mapping: dict[str, str] | None = None,
+        file_usages: dict[Path, set[str]] | None = None,
     ) -> tuple[int, list[str]]:
         """
         Calculate suspicion score for a node.
@@ -179,6 +211,15 @@ class SuspicionScorer:
             reasons.append(
                 f"Qualified name found in usages: {self.config.qualified_name_used_penalty}"
             )
+
+        # For imports, check file-scoped usage instead of global
+        # This fixes false positives where imports are used in the same file
+        if symbol.type == SymbolType.IMPORT and file_usages:
+            if self._is_import_used_in_file(symbol, file_usages):
+                confidence += self.config.name_used_penalty
+                reasons.append(
+                    f"Import '{symbol.name}' used in same file: {self.config.name_used_penalty}"
+                )
 
         # Dunder methods are almost always used implicitly
         if symbol.is_dunder or symbol.name in self.implicit_names:
@@ -240,9 +281,9 @@ class SuspicionScorer:
             for dec in symbol.decorators:
                 for pattern in self.entrypoint_decorators:
                     if pattern in dec.lower():
-                        confidence += self.config.decorator_penalty
+                        confidence += self.config.entrypoint_penalty
                         reasons.append(
-                            f"Has entrypoint decorator '{dec}': {self.config.decorator_penalty}"
+                            f"Has entrypoint decorator '{dec}': {self.config.entrypoint_penalty}"
                         )
                         break
 
@@ -250,6 +291,16 @@ class SuspicionScorer:
         if symbol.name.startswith("test_") or symbol.name.endswith("_test"):
             confidence -= 30
             reasons.append("Looks like a test function: -30")
+
+        # Dynamic dispatch patterns - methods called via getattr() with prefix patterns
+        # Common patterns: mod_*, handle_*, on_*, do_*, process_*, _on_*, emit_*
+        dynamic_dispatch_prefixes = (
+            "mod_", "handle_", "on_", "do_", "process_", "_on_", "emit_",
+            "cmd_", "action_", "visit_", "parse_",
+        )
+        if symbol.type == SymbolType.METHOD and symbol.name.startswith(dynamic_dispatch_prefixes):
+            confidence -= 30
+            reasons.append("Dynamic dispatch pattern (prefix-based): -30")
 
         # File age scoring
         if file_age_info and symbol.location.file in file_age_info:
@@ -282,6 +333,19 @@ class SuspicionScorer:
                 # Model is used via ORM - reduce confidence
                 confidence -= 20
                 reasons.append("SQLAlchemy Model with ORM usages: -20")
+
+        # Flask-Migrate model imports in app.py
+        # Models are imported in app.py for Alembic/Flask-Migrate to detect for migrations
+        # Pattern: import in app.py file of a CamelCase name (likely a model class)
+        if symbol.type == SymbolType.IMPORT:
+            file_name = symbol.location.file.name.lower()
+            # Check if in app.py or main entry file
+            if file_name in ("app.py", "application.py", "main.py", "__init__.py"):
+                # Check if name looks like a model class (CamelCase, not all caps)
+                name = symbol.name
+                if name and name[0].isupper() and not name.isupper() and "_" not in name:
+                    confidence -= 30
+                    reasons.append("Likely migration model import in app.py: -30")
 
         # Clamp to valid range
         confidence = max(0, min(100, confidence))
@@ -317,6 +381,16 @@ class SuspicionScorer:
         import fnmatch
 
         return fnmatch.fnmatch(name, pattern)
+
+    def _is_import_used_in_file(
+        self,
+        symbol,
+        file_usages: dict[Path, set[str]],
+    ) -> bool:
+        """Check if import is used within the same file."""
+        file_path = symbol.location.file
+        names_in_file = file_usages.get(file_path, set())
+        return symbol.name in names_in_file
 
     def _is_sqlalchemy_model(self, symbol) -> bool:
         """Check if symbol is a SQLAlchemy Model class."""

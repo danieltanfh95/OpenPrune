@@ -90,6 +90,27 @@ class FlaskRestPlusPlugin:
                 score_adjustment=-20,
                 description="Namespace output marshalling decorator",
             ),
+            # Namespace route patterns
+            DecoratorScoringRule(
+                pattern="ns.route",
+                score_adjustment=-40,
+                description="Flask-RESTX namespace route decorator",
+            ),
+            DecoratorScoringRule(
+                pattern="namespace.route",
+                score_adjustment=-40,
+                description="Flask-RESTX namespace route decorator",
+            ),
+            DecoratorScoringRule(
+                pattern="*.route",
+                score_adjustment=-30,
+                description="Generic route decorator pattern",
+            ),
+            DecoratorScoringRule(
+                pattern="ns.doc",
+                score_adjustment=-10,
+                description="Namespace documentation decorator",
+            ),
         ]
 
     def detect_entrypoints(
@@ -134,6 +155,34 @@ class _RestPlusVisitor(ast.NodeVisitor):
         self.entrypoints: list[DetectedEntrypoint] = []
         self._resource_classes: dict[str, int] = {}  # class_name -> line
         self._api_resources: dict[str, str] = {}  # class_name -> route
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        """Detect functions with namespace route decorators."""
+        for decorator in node.decorator_list:
+            ep = self._parse_route_decorator(decorator, node)
+            if ep:
+                self.entrypoints.append(ep)
+        self.generic_visit(node)
+
+    def _parse_route_decorator(
+        self, decorator: ast.expr, func: ast.FunctionDef
+    ) -> DetectedEntrypoint | None:
+        """Parse @ns.route(), @namespace.route(), and similar decorators."""
+        match decorator:
+            case ast.Call(func=ast.Attribute(value=ast.Name(id=obj), attr="route")):
+                # Any variable.route() pattern - e.g., @ns.route("/path")
+                route = ""
+                if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                    route = str(decorator.args[0].value)
+                return DetectedEntrypoint(
+                    name=func.name,
+                    type=EntrypointType.FLASK_ROUTE,
+                    line=func.lineno,
+                    file=self.file_path,
+                    decorator=f"@{obj}.route",
+                    arguments={"route": route} if route else {},
+                )
+        return None
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Detect Resource subclasses."""
