@@ -9,6 +9,7 @@ where the AST-based analysis failed to trace imports correctly.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -85,10 +86,16 @@ def find_import_patterns(module_path: str) -> list[str]:
         - 'from src.foo.bar import'
         - 'from src.foo import bar'
         - 'import src.foo.bar'
+
+    Security: Module paths are escaped to prevent regex injection attacks
+    from malicious filenames containing regex metacharacters.
     """
+    # Escape regex metacharacters to prevent injection attacks
+    escaped_path = re.escape(module_path)
+
     patterns = [
-        f"from {module_path} import",
-        f"import {module_path}",
+        f"from {escaped_path} import",
+        f"import {escaped_path}",
     ]
 
     # Also check for parent module imports
@@ -96,9 +103,11 @@ def find_import_patterns(module_path: str) -> list[str]:
     parts = module_path.rsplit(".", 1)
     if len(parts) == 2:
         parent, name = parts
-        patterns.append(f"from {parent} import {name}")
+        escaped_parent = re.escape(parent)
+        escaped_name = re.escape(name)
+        patterns.append(f"from {escaped_parent} import {escaped_name}")
         # With other imports on same line
-        patterns.append(f"from {parent} import .*{name}")
+        patterns.append(f"from {escaped_parent} import .*{escaped_name}")
 
     return patterns
 

@@ -33,6 +33,66 @@ PRIORITY_P2 = 2  # High confidence (80-99%) imports - usually true positives
 PRIORITY_P3 = 3  # 100% confidence - auto-delete, no LLM needed
 PRIORITY_SKIP = 4  # Low confidence (<50) - likely used, skip
 
+# Security: Maximum file size to embed in prompts (100KB)
+MAX_FILE_SIZE_BYTES = 100 * 1024
+
+# Security: Patterns that could indicate prompt injection attempts
+PROMPT_INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous|prior|above)\s+instructions",
+    r"disregard\s+(all\s+)?(previous|prior|above)",
+    r"forget\s+(all\s+)?(previous|prior|above)",
+    r"new\s+instructions?\s*:",
+    r"system\s*:\s*you\s+are",
+    r"assistant\s*:\s*",
+    r"<\s*system\s*>",
+    r"<\s*/?\s*instruction",
+]
+
+
+def _sanitize_content_for_prompt(content: str, file_path: str = "") -> tuple[str, list[str]]:
+    """Sanitize file content before embedding in LLM prompts.
+
+    This helps protect against prompt injection attacks from malicious code
+    in analyzed files. Note: This is defense-in-depth; the LLM should also
+    be instructed to focus only on code analysis.
+
+    Args:
+        content: Raw file content
+        file_path: Path to file (for warnings)
+
+    Returns:
+        Tuple of (sanitized content, list of warnings if suspicious patterns found)
+    """
+    warnings = []
+
+    # Check file size
+    if len(content.encode("utf-8")) > MAX_FILE_SIZE_BYTES:
+        # Truncate large files to prevent prompt stuffing
+        content = content[: MAX_FILE_SIZE_BYTES // 2]  # Rough character estimate
+        warnings.append(f"File truncated (exceeded {MAX_FILE_SIZE_BYTES // 1024}KB limit)")
+
+    # Check for suspicious patterns that might be prompt injection attempts
+    content_lower = content.lower()
+    for pattern in PROMPT_INJECTION_PATTERNS:
+        if re.search(pattern, content_lower, re.IGNORECASE):
+            warnings.append(f"Suspicious pattern detected in {file_path}: potential prompt injection")
+            break  # One warning is enough
+
+    return content, warnings
+
+
+def _escape_markdown(text: str) -> str:
+    """Escape markdown special characters in user-controlled strings.
+
+    Args:
+        text: Text to escape
+
+    Returns:
+        Text with markdown characters escaped
+    """
+    # Escape backticks which could break code fence formatting
+    return text.replace("`", "\\`")
+
 
 def _validate_llm_tool(llm_tool: str) -> None:
     """Validate the LLM tool name for security.
@@ -344,7 +404,13 @@ def _build_oneshot_prompt(
     candidates: list[dict],
     orphaned_files: list[dict],
 ) -> str:
-    """Build a comprehensive prompt for single-session verification."""
+    """Build a comprehensive prompt for single-session verification.
+
+    Security: File contents are sanitized to mitigate prompt injection risks.
+    Large files are truncated and suspicious patterns are flagged.
+    """
+    security_warnings: list[str] = []
+
     prompt_parts = [
         build_system_prompt(project_path),
         "\n---\n\n",
@@ -355,7 +421,9 @@ def _build_oneshot_prompt(
     if orphaned_files:
         prompt_parts.append("## Orphaned Files (100% confidence - entire file unreachable)\n\n")
         for of in orphaned_files:
-            prompt_parts.append(f"- **{of.get('file', 'unknown')}**: {of.get('symbols', 0)} symbols, ")
+            # Escape file paths to prevent markdown injection
+            safe_file = _escape_markdown(str(of.get("file", "unknown")))
+            prompt_parts.append(f"- **{safe_file}**: {of.get('symbols', 0)} symbols, ")
             prompt_parts.append(f"{of.get('lines', 0)} lines\n")
         prompt_parts.append("\n")
 
@@ -368,14 +436,19 @@ def _build_oneshot_prompt(
 
     for file_path, items in by_file.items():
         full_path = _safe_resolve(project_path, file_path)
-        prompt_parts.append(f"### {file_path}\n\n")
+        safe_file_path = _escape_markdown(file_path)
+        prompt_parts.append(f"### {safe_file_path}\n\n")
 
         # Include file contents (skip if path traversal detected)
         if full_path is None:
             prompt_parts.append("*(Skipped: path outside project directory)*\n\n")
         elif full_path.exists():
             try:
-                content = full_path.read_text()
+                raw_content = full_path.read_text()
+                # Security: Sanitize content before embedding in prompt
+                content, warnings = _sanitize_content_for_prompt(raw_content, file_path)
+                security_warnings.extend(warnings)
+
                 # Add line numbers for reference
                 numbered_lines = []
                 for i, line in enumerate(content.split("\n"), 1):
@@ -390,7 +463,9 @@ def _build_oneshot_prompt(
         prompt_parts.append("**Dead code candidates in this file:**\n\n")
         for item in items:
             confidence = item.get("confidence", 0)
-            reasons = ", ".join(item.get("reasons", [])) or "No specific reason"
+            # Security: Escape user-controlled strings to prevent markdown injection
+            raw_reasons = item.get("reasons", [])
+            reasons = ", ".join(_escape_markdown(r) for r in raw_reasons) or "No specific reason"
             priority = _assign_priority(item)
 
             # Add confidence level indicator with priority
@@ -406,10 +481,14 @@ def _build_oneshot_prompt(
             else:
                 conf_label = "[P3 100% - auto-delete candidate]"
 
+            # Security: Escape qualified_name and type to prevent injection
+            safe_name = _escape_markdown(str(item.get("qualified_name", item.get("name", "unknown"))))
+            safe_type = _escape_markdown(str(item.get("type", "unknown")))
+
             prompt_parts.append(
-                f"- `{item.get('qualified_name', item.get('name', 'unknown'))}` "
+                f"- `{safe_name}` "
                 f"(line {item.get('line', 0)}, {confidence}% {conf_label})\n"
-                f"  - Type: {item.get('type', 'unknown')}\n"
+                f"  - Type: {safe_type}\n"
                 f"  - Reasons: {reasons}\n\n"
             )
 
@@ -472,6 +551,12 @@ Return a JSON array with your verdicts. Include ALL items from the list above.
 
 Now analyze all items and return the complete JSON:
 """)
+
+    # Log security warnings to console if any suspicious patterns were detected
+    if security_warnings:
+        console.print("[yellow]Security warnings during prompt building:[/]")
+        for warning in security_warnings:
+            console.print(f"  [yellow]- {warning}[/]")
 
     return "".join(prompt_parts)
 

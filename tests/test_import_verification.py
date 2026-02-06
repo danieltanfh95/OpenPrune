@@ -53,11 +53,16 @@ class TestFindImportPatterns:
         assert "import utils" in patterns
 
     def test_nested_module(self):
-        """Should generate patterns for nested module."""
+        """Should generate regex-escaped patterns for nested module.
+
+        Security: Patterns are escaped to prevent regex injection from
+        malicious module paths (e.g., filenames with regex metacharacters).
+        """
         patterns = find_import_patterns("src.utils.helpers")
-        assert "from src.utils.helpers import" in patterns
-        assert "import src.utils.helpers" in patterns
-        assert "from src.utils import helpers" in patterns
+        # Dots are escaped for safe regex matching
+        assert r"from src\.utils\.helpers import" in patterns
+        assert r"import src\.utils\.helpers" in patterns
+        assert r"from src\.utils import helpers" in patterns
 
 
 class TestSearchForImports:
