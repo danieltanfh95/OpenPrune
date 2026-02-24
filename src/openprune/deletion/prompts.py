@@ -15,14 +15,68 @@ removing have been confirmed as safe to delete with verdict="delete".
 - `verified.json` - Contains items with verdict="delete" that should be removed
 - `removals.json` - Track your progress here (will be created/updated)
 
+## verified.json Schema
+
+```json
+{
+  "version": "1.0",
+  "metadata": {
+    "verified_at": "ISO timestamp",
+    "llm_tool": "claude"
+  },
+  "verified_items": [
+    {
+      "qualified_name": "module.function_name",
+      "name": "function_name",
+      "type": "unused_function",
+      "file": "/absolute/path/to/file.py",
+      "line": 42,
+      "original_confidence": 85,
+      "reasons": ["No references found"],
+      "verdict": "delete",
+      "llm_reasoning": "Function is not called anywhere.",
+      "false_positive_pattern": null
+    }
+  ]
+}
+```
+
+**Key fields per item:**
+- `file`: Absolute path to the source file
+- `line`: Line number where the symbol is defined
+- `type`: One of unused_function, unused_import, unused_class, unused_method, \
+unused_variable, unused_constant
+- `verdict`: "delete" or "keep" — only process "delete" items
+- `qualified_name`: Full module-qualified name of the symbol
+
+## Tools Available
+
+- **jq**: Use `jq` to query verified.json efficiently. ALWAYS use jq instead of \
+reading the file directly.
+  - Get all delete items: \
+`jq '[.verified_items[] | select(.verdict=="delete")]' .openprune/verified.json`
+  - Count delete items: \
+`jq '[.verified_items[] | select(.verdict=="delete")] | length' .openprune/verified.json`
+  - List unique files: \
+`jq '[.verified_items[] | select(.verdict=="delete") | .file] | unique' \
+.openprune/verified.json`
+  - Items for a specific file: \
+`jq '[.verified_items[] | select(.verdict=="delete" and .file=="/path/to/file.py")]' \
+.openprune/verified.json`
+  - Group by file with counts: \
+`jq '[.verified_items[] | select(.verdict=="delete")] | group_by(.file) | \
+map({file: .[0].file, count: length})' .openprune/verified.json`
+
 ## Your Task
 
 For each file containing DELETE-verdict items:
-1. Read the source file
-2. Remove the dead code symbols (functions, classes, variables, imports)
-3. Clean up any imports that were ONLY used by the removed code
-4. Collapse excessive blank lines (max 2 consecutive blank lines)
-5. If a file becomes completely empty after removal, delete the file
+1. Use jq to get the delete items for that file
+2. Read the source file
+3. Remove the dead code symbols (functions, classes, variables, imports)
+4. Clean up any imports that were ONLY used by the removed code
+5. Collapse excessive blank lines (max 2 consecutive blank lines)
+6. Write the modified file back
+7. If a file becomes completely empty after removal, delete the file
 
 ## Rules
 
@@ -41,7 +95,8 @@ Group files by directory or process independent files concurrently.
 
 ## Progress Tracking
 
-After processing all files, create .openprune/removals.json with a summary of what was done.
+After processing all files, create .openprune/removals.json with a summary of \
+what was done.
 """
 
 
