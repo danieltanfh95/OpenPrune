@@ -1,5 +1,6 @@
 """Interactive LLM session launcher for dead code deletion."""
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -8,7 +9,55 @@ from openprune.deletion.prompts import (
     build_deletion_combined_prompt,
     build_deletion_system_prompt,
 )
+from openprune.models.verification import LLMVerdict, VerifiedItem
+from openprune.output.json_writer import load_verification_results
+from openprune.paths import ensure_openprune_dir, get_verified_path
 from openprune.verification.batch import _validate_llm_tool
+
+
+def _generate_delete_plan(project_path: Path) -> Path:
+    """Pre-generate a compact delete plan grouped by file.
+
+    Creates .openprune/delete_plan.json with only the fields the LLM needs,
+    grouped by file. This avoids the LLM having to parse the large
+    verified.json and keeps context usage minimal.
+
+    Returns:
+        Path to the generated plan file.
+    """
+    verified_path = get_verified_path(project_path)
+    data = load_verification_results(verified_path)
+
+    # Group delete items by file, keeping only essential fields
+    by_file: dict[str, list[dict]] = {}
+    for item_data in data.get("verified_items", []):
+        item = VerifiedItem.from_dict(item_data)
+        if item.verdict != LLMVerdict.DELETE:
+            continue
+
+        file_str = str(item.file)
+        if file_str not in by_file:
+            by_file[file_str] = []
+
+        by_file[file_str].append({
+            "name": item.name,
+            "qualified_name": item.qualified_name,
+            "type": item.type,
+            "line": item.line,
+        })
+
+    plan = {
+        "total_items": sum(len(v) for v in by_file.values()),
+        "total_files": len(by_file),
+        "files": by_file,
+    }
+
+    ensure_openprune_dir(project_path)
+    plan_path = project_path / ".openprune" / "delete_plan.json"
+    with open(plan_path, "w", encoding="utf-8") as f:
+        json.dump(plan, f, indent=2)
+
+    return plan_path
 
 
 def launch_deletion_session(
@@ -17,9 +66,9 @@ def launch_deletion_session(
 ) -> None:
     """Launch an interactive LLM session for dead code deletion.
 
-    This exec's into the LLM CLI, replacing the current process.
-    The LLM will have access to the project files and can read/write
-    to .openprune/ directory.
+    Pre-generates a compact delete_plan.json grouped by file, then
+    exec's into the LLM CLI. The LLM reads items per-file on demand
+    to avoid flooding its context window.
 
     Args:
         project_path: Path to the project root
@@ -38,6 +87,10 @@ def launch_deletion_session(
             f"LLM CLI tool '{llm_tool}' not found in PATH. "
             f"Please install it or specify a different tool with --llm."
         )
+
+    # Pre-generate compact plan file so the LLM doesn't need to parse
+    # the full verified.json (which can be very large)
+    _generate_delete_plan(project_path)
 
     # Build the system prompt with project context
     system_prompt = build_deletion_system_prompt(project_path)
@@ -69,15 +122,20 @@ def _build_deletion_command(
     """
     initial_prompt = """Start the dead code deletion session.
 
-Read .openprune/verified.json to get all items with verdict="delete".
-Group them by file, then process each file:
-1. Read the source file
-2. Remove all DELETE-verdict symbols (including decorators and docstrings)
-3. Clean up orphaned imports
-4. Write the modified file back
-5. Track progress in .openprune/removals.json
+A pre-generated plan is at .openprune/delete_plan.json with items grouped by file.
 
-Begin by reading verified.json and listing the files to process."""
+Step 1: Get the list of files to process:
+  jq '.files | keys[]' .openprune/delete_plan.json
+
+Step 2: For each file, get its items:
+  jq '.files["/path/to/file.py"]' .openprune/delete_plan.json
+
+Step 3: Read the source file, remove the listed symbols, write it back.
+
+Spawn agents to process multiple files in parallel. \
+Each agent should handle a batch of files independently.
+
+Begin now."""
 
     if llm_tool == "claude":
         return [
