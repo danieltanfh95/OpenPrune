@@ -46,7 +46,7 @@ from openprune.models.results import (
 )
 from openprune.output.json_writer import write_config, write_results
 from openprune.output.tree import build_results_tree, build_summary_tree, display_tree
-from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path
+from openprune.paths import ensure_openprune_dir, get_config_path, get_results_path, get_verified_path
 
 app = typer.Typer(
     name="openprune",
@@ -556,6 +556,112 @@ def _show_verify_dry_run(path: Path, selected_tiers: set[int]) -> None:
 
 
 @app.command()
+def delete(
+    path: Path = typer.Option(
+        Path("."),
+        "--path", "-p",
+        help="Path to the Python project (default: current directory)",
+    ),
+    llm: str = typer.Option(
+        "claude",
+        "--llm",
+        "-l",
+        help="LLM CLI tool to use (e.g., claude, kimi, opencode)",
+    ),
+    auto: bool = typer.Option(
+        False,
+        "--auto", "-a",
+        help="Auto mode: non-interactive single LLM call (default: interactive)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run", "-n",
+        help="Preview what would be deleted without making changes",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force", "-f",
+        help="Skip git clean check",
+    ),
+) -> None:
+    """Delete verified dead code using an LLM.
+
+    Reads verified.json and uses an LLM to remove all items with
+    verdict="delete". The LLM handles file editing autonomously.
+
+    By default, launches an interactive LLM session with full file
+    permissions. The LLM reads verified.json, processes each file,
+    and removes dead code directly.
+
+    Use --auto for non-interactive processing (single LLM call).
+
+    Requires a clean git working tree (use --force to skip this check).
+    To undo all changes: git checkout .
+    """
+    path = path.resolve()
+    verified_path = get_verified_path(path)
+
+    if not verified_path.exists():
+        console.print(f"[red]No verified results found:[/] {verified_path}")
+        console.print("Run [bold]openprune verify[/] first to generate verified.json.")
+        raise typer.Exit(1)
+
+    if dry_run:
+        from openprune.deletion.batch import (
+            _display_dry_run,
+            _group_by_file,
+            _load_delete_items,
+        )
+
+        try:
+            items = _load_delete_items(path)
+            by_file = _group_by_file(items, path)
+            console.print(Panel.fit("[bold cyan]Dry Run Preview - Deletion[/]"))
+            _display_dry_run(by_file)
+        except (FileNotFoundError, RuntimeError) as e:
+            console.print(f"[red]Error:[/] {e}")
+            raise typer.Exit(1)
+        return
+
+    if auto:
+        from openprune.deletion.batch import run_batch_deletion
+
+        try:
+            run_batch_deletion(path, llm, force=force)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/] {e}")
+            raise typer.Exit(1)
+    else:
+        # Interactive mode - handoff to LLM CLI
+        from openprune.deletion.batch import _check_git_clean
+
+        # Safety check before exec (can't check after)
+        if not force:
+            is_clean, msg = _check_git_clean(path)
+            if not is_clean:
+                console.print(f"[red]Git working tree is not clean.[/] {msg}")
+                console.print(
+                    "Commit or stash your changes first, "
+                    "or use --force to skip this check."
+                )
+                raise typer.Exit(1)
+
+        console.print(Panel.fit("[bold blue]OpenPrune - Dead Code Deletion[/]"))
+        console.print(f"\n[dim]Using LLM:[/] {llm}")
+        console.print(f"[dim]Working directory:[/] {path}")
+        console.print("[dim]The LLM has full file access to edit and delete[/]")
+        console.print("[dim]To undo all changes: git checkout .[/]\n")
+
+        from openprune.deletion.session import launch_deletion_session
+
+        try:
+            launch_deletion_session(path, llm)
+        except RuntimeError as e:
+            console.print(f"[red]Error:[/] {e}")
+            raise typer.Exit(1)
+
+
+@app.command()
 def show(
     results_path: Optional[Path] = typer.Argument(
         None,
@@ -727,6 +833,64 @@ def run_pipeline(
             run_batch_verification(path, llm, min_confidence, include_orphaned=False)
         except RuntimeError as e:
             console.print(f"[red]Verification error:[/] {e}")
+            return
+
+        # Phase 5: Deletion (non-interactive only, interactive exits at exec)
+        _run_deletion_phase(path, llm, interactive=False)
+
+
+def _run_deletion_phase(
+    path: Path,
+    llm: str,
+    interactive: bool,
+) -> None:
+    """Run the deletion phase of the pipeline after verification."""
+    verified_path = get_verified_path(path)
+    if not verified_path.exists():
+        console.print("[dim]No verified.json found, skipping deletion.[/]")
+        return
+
+    # Check if there are any DELETE items
+    from openprune.output.json_writer import load_verification_results
+
+    data = load_verification_results(verified_path)
+    delete_count = sum(
+        1 for item in data.get("verified_items", [])
+        if item.get("verdict") == "delete"
+    )
+
+    if delete_count == 0:
+        console.print("[dim]No items with DELETE verdict, skipping deletion.[/]")
+        return
+
+    if interactive:
+        proceed = Confirm.ask(
+            f"\n[bold]Proceed with deleting {delete_count} dead code items?[/]",
+            default=True,
+        )
+        if not proceed:
+            console.print("[yellow]Deletion skipped.[/]")
+            return
+
+        console.print(Panel.fit("[bold blue]OpenPrune - Dead Code Deletion[/]"))
+        console.print(f"\n[dim]Using LLM:[/] {llm}")
+        console.print(f"[dim]Working directory:[/] {path}")
+        console.print("[dim]The LLM has full file access to edit and delete[/]")
+        console.print("[dim]To undo all changes: git checkout .[/]\n")
+
+        from openprune.deletion.session import launch_deletion_session
+
+        try:
+            launch_deletion_session(path, llm)
+        except RuntimeError as e:
+            console.print(f"[red]Deletion error:[/] {e}")
+    else:
+        from openprune.deletion.batch import run_batch_deletion
+
+        try:
+            run_batch_deletion(path, llm, force=True)
+        except RuntimeError as e:
+            console.print(f"[red]Deletion error:[/] {e}")
 
 
 def _display_archetype_results(result) -> None:

@@ -7,6 +7,13 @@ from openprune.models.archetype import (
     FrameworkDetection,
     LintingConfig,
 )
+from openprune.models.deletion import (
+    DeletionItem,
+    DeletionResults,
+    DeletionStatus,
+    DeletionSummary,
+    FileModification,
+)
 from openprune.models.dependency import (
     DependencyNode,
     DependencyTree,
@@ -32,6 +39,12 @@ __all__ = [
     "EntrypointType",
     "FrameworkDetection",
     "LintingConfig",
+    # Deletion models
+    "DeletionItem",
+    "DeletionResults",
+    "DeletionStatus",
+    "DeletionSummary",
+    "FileModification",
     # Dependency models
     "DependencyNode",
     "DependencyTree",

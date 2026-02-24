@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from openprune.models.archetype import ArchetypeResult
+from openprune.models.deletion import DeletionResults
 from openprune.models.results import AnalysisResults
 from openprune.models.verification import VerificationResults
 
@@ -178,5 +179,19 @@ def write_verification_results(results: VerificationResults, output_path: Path) 
 
 def load_verification_results(results_path: Path) -> dict:
     """Load a verified.json file."""
+    with open(results_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_deletion_results(results: DeletionResults, output_path: Path) -> None:
+    """Write the removals.json file."""
+    data = results.to_dict()
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_deletion_results(results_path: Path) -> dict:
+    """Load a removals.json file."""
     with open(results_path, "r", encoding="utf-8") as f:
         return json.load(f)
