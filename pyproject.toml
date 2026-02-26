@@ -1,11 +1,25 @@
 [project]
 name = "openprune"
 version = "0.1.0"
-description = "Interactive CLI for detecting dead code in Python Flask+Celery applications"
+description = "Dead code detection for Python applications with LLM-assisted verification and removal"
 authors = [
     {name = "danieltanfh", email = "danieltanfh95@gmail.com"}
 ]
 readme = "README.md"
+license = {text = "MIT"}
+keywords = ["dead-code", "static-analysis", "python", "flask", "celery", "ast", "linter"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 requires-python = ">=3.10"
 dependencies = [
     "typer[all]>=0.9.0",
@@ -24,6 +38,11 @@ dev = [
 
 [project.scripts]
 openprune = "openprune.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/danieltanfh95/OpenPrune"
+Repository = "https://github.com/danieltanfh95/OpenPrune"
+Issues = "https://github.com/danieltanfh95/OpenPrune/issues"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -1,6 +1,6 @@
 # OpenPrune
 
-Dead code detection for Python Flask+Celery applications with LLM-assisted verification.
+Dead code detection for Python applications with LLM-assisted verification and removal.
 
 ## Rationale
 
@@ -8,21 +8,21 @@ Existing tools like `vulture`, `deadcode`, and `flake8` don't adequately handle 
 
 OpenPrune:
 
-1. **Auto-detects** Python app types to find entrypoints (Flask routes, Celery tasks, CLI commands)
+1. **Auto-detects** Python app types to find entrypoints (Flask routes, Celery tasks, FastAPI endpoints, CLI commands)
 2. **Performs AST-level analysis** to trace symbol usage from entrypoints
-3. **Hands off to an LLM** for verification—static analysis does the heavy lifting, LLM resolves edge cases
+3. **Hands off to an LLM** for verification and removal—static analysis does the heavy lifting, LLM resolves edge cases
 
 This approach avoids flaky context engineering and token wastage from feeding entire codebases to LLMs.
 
 ## How It Works
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   detect    │ ──▶ │   analyze   │ ──▶ │   verify    │
-└─────────────┘     └─────────────┘     └─────────────┘
-      │                   │                   │
-      ▼                   ▼                   ▼
- config.json         results.json       verified.json
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  detect  │ ──▶ │ analyze  │ ──▶ │  verify  │ ──▶ │  delete  │
+└──────────┘     └──────────┘     └──────────┘     └──────────┘
+      │                │                │                │
+      ▼                ▼                ▼                ▼
+config.json      results.json    verified.json    removals.json
 ```
 
 1. **Detection** — Scans for framework patterns (Flask `@app.route`, Celery `@task`, Click commands) and identifies entrypoints. Outputs `.openprune/config.json`.
@@ -34,6 +34,8 @@ This approach avoids flaky context engineering and token wastage from feeding en
    - Framework patterns (missing expected decorators)
 
 3. **Verification** — Launches an LLM session with pre-built context. The LLM reviews candidates and marks each as DELETE, KEEP, or UNCERTAIN. This catches dynamic patterns that static analysis misses.
+
+4. **Deletion** — Uses an LLM to remove all verified dead code. Reads `verified.json`, processes each file, and removes symbols marked DELETE. Requires a clean git working tree (undo via `git checkout .`).
 
 ## Limitations
 
@@ -53,6 +55,7 @@ This is why LLM verification exists—the LLM can reason about whether a symbol 
 openprune detect  → .openprune/config.json   # Detect frameworks & entrypoints
 openprune analyze → .openprune/results.json  # Find dead code candidates
 openprune verify  → .openprune/verified.json # LLM-assisted verification
+openprune delete  → .openprune/removals.json # LLM-driven code removal
 ```
 
 ## Installation
@@ -68,9 +71,10 @@ pip install openprune
 openprune run ./my-project
 
 # Or step by step:
-openprune detect ./my-project   # Generate config
-openprune analyze ./my-project  # Find dead code
-openprune verify ./my-project   # Verify with LLM
+openprune detect ./my-project    # Generate config
+openprune analyze ./my-project   # Find dead code
+openprune verify ./my-project    # Verify with LLM
+openprune delete ./my-project    # Remove dead code
 ```
 
 ## Commands
@@ -93,10 +97,13 @@ openprune detect ./my-project
 ```
 
 Detects:
-- Flask (routes, blueprints, CLI commands)
+- Flask (routes, blueprints, hooks, error handlers, CLI commands)
+- Celery (tasks, shared tasks, signal handlers)
 - Flask-RESTPlus/Flask-RESTX (Resource classes, HTTP methods)
-- Celery (tasks, shared tasks)
-- Click CLI commands
+- SQLAlchemy (model classes, ORM decorators)
+- Pydantic (BaseModel field tracking)
+- pytest (test functions, fixtures)
+- FastAPI, Django, Click, Typer (import-based detection)
 - Main blocks (`if __name__ == "__main__"`)
 - Infrastructure files (Dockerfile, docker-compose.yml, .gitlab-ci.yml, shell scripts)
 
@@ -113,32 +120,64 @@ Outputs `.openprune/results.json` with confidence scores (0–100%).
 
 ### `openprune verify`
 
-Launch an LLM session to verify dead code candidates.
+Verify dead code candidates using an LLM.
 
 ```bash
 # Interactive mode (default) — drops into LLM session
 openprune verify ./my-project
 
-# Use a different LLM CLI
-openprune verify ./my-project --llm kimi
-openprune verify ./my-project --llm opencode
+# Auto mode — non-interactive single LLM call
+openprune verify ./my-project --auto
 
-# Non-interactive batch mode
-openprune verify ./my-project --batch
+# Select priority tiers to verify
+openprune verify ./my-project --tier p0            # Default: medium confidence
+openprune verify ./my-project --tier p1 --tier p2  # High confidence
+openprune verify ./my-project --tier all            # All tiers
 
 # Preview what would be sent to LLM
 openprune verify ./my-project --dry-run
 
-# Only verify high-confidence items
-openprune verify ./my-project --min-confidence 80
+# Include orphaned files in LLM verification (normally auto-marked DELETE)
+openprune verify ./my-project --include-orphaned
+
+# Use a different LLM CLI
+openprune verify ./my-project --llm kimi
 ```
+
+**Priority Tiers:**
+
+| Tier | Confidence | Type | Description |
+|------|-----------|------|-------------|
+| P0 | 50–79% | Non-imports | Highest LLM value (default) |
+| P1 | 80–99% | Non-imports | High confidence dead code |
+| P2 | 80–99% | Imports | Usually true positives |
+| P3 | 100% | All | Auto-delete candidates |
+| SKIP | <50% | All | Likely used, not verified |
 
 **Supported LLM CLIs:**
 - `claude` (default) — Anthropic's Claude Code CLI
 - `kimi` — Kimi CLI
 - `opencode` — OpenCode CLI
 
-The LLM receives context about OpenPrune and can read/write files in `.openprune/`.
+### `openprune delete`
+
+Delete verified dead code using an LLM.
+
+```bash
+# Interactive mode (default) — drops into LLM session
+openprune delete ./my-project
+
+# Auto mode — non-interactive single LLM call
+openprune delete ./my-project --auto
+
+# Preview what would be deleted
+openprune delete ./my-project --dry-run
+
+# Skip git clean check
+openprune delete ./my-project --force
+```
+
+Requires a clean git working tree by default. To undo all changes: `git checkout .`
 
 ### `openprune show`
 
@@ -154,11 +193,13 @@ openprune show --verbose                 # Detailed view
 
 All outputs are stored in the `.openprune/` directory:
 
-| File            | Description                                                  |
-| --------------- | ------------------------------------------------------------ |
-| `config.json`   | Detected frameworks, entrypoints, and analysis settings      |
-| `results.json`  | Dead code candidates with confidence scores and reasons      |
-| `verified.json` | LLM verification results with DELETE/KEEP/UNCERTAIN verdicts |
+| File               | Description                                                  |
+| ------------------ | ------------------------------------------------------------ |
+| `config.json`      | Detected frameworks, entrypoints, and analysis settings      |
+| `results.json`     | Dead code candidates with confidence scores and reasons      |
+| `verified.json`    | LLM verification results with DELETE/KEEP/UNCERTAIN verdicts |
+| `delete_plan.json` | Compact deletion plan grouped by file (auto-generated)       |
+| `removals.json`    | Deletion results tracking what was removed                   |
 
 ## Confidence Scoring
 
@@ -233,8 +274,11 @@ OpenPrune uses a plugin architecture for framework detection. Built-in plugins i
 | Plugin | Detects |
 |--------|---------|
 | `flask` | `@app.route()`, `@bp.route()`, hooks, error handlers, CLI commands |
-| `flask-restplus` | `Resource` subclasses, HTTP methods (`get`, `post`, etc.), `api.add_resource()` |
 | `celery` | `@app.task`, `@shared_task`, signal handlers |
+| `flask-restplus` | `Resource` subclasses, HTTP methods (`get`, `post`, etc.), `api.add_resource()` |
+| `sqlalchemy` | Model classes, `@validates`, `@hybrid_property`, event listeners |
+| `pydantic` | `BaseModel` fields, `@field_validator`, `@model_validator`, computed fields |
+| `pytest` | `test_*` functions, `Test*` classes, `@pytest.fixture` |
 
 ### Flask-RESTPlus/Flask-RESTX Support
 
